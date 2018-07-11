@@ -1,0 +1,6 @@
+* 通讯协议
+  #+begin_src lisp :mkdirp yes :tangle /dev/shm/eggos/protocol.tr
+    (struct egg_payload
+      (int 0 sn)
+      )
+  #+end_src
