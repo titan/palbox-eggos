@@ -332,7 +332,9 @@
 * Makefile
 #+begin_src makefile :mkdirp yes :tangle /dev/shm/eggos/Makefile
   BINARY = eggos
-  OBJS += egg_payload.o zeropack.o
+  OBJS += egg_payload.o egg_packet.o hash.o zeropack.o
+
+  CFLAGS += -DZEROPACK_EGG_PAYLOAD_ENABLED
 
   OPENCM3_DIR = libopencm3
   LDSCRIPT = stm32f0.ld
