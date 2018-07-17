@@ -4,6 +4,8 @@ TARGET = $(BUILDDIR)/eggos
 
 BUILDSRC:=$(BUILDDIR)/Makefile
 CORESRC:=$(BUILDDIR)/eggos.c
+COREFSMSRC:=$(BUILDDIR)/egg-fsm.c
+PROTOFSMSRC:=$(BUILDDIR)/egg-proto-fsm.c
 PROTOSRC:=$(BUILDDIR)/tightrope.h
 LIBRARY:=$(BUILDDIR)/libopencm3
 
@@ -11,11 +13,17 @@ include .config
 
 all: $(TARGET)
 
-$(TARGET): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY)
+$(TARGET): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC)
 	cd $(BUILDDIR); make; cd -
 
 $(CORESRC): core.org | prebuild
 	org-tangle $<
+
+$(COREFSMSRC): egg-fsm.xlsx | prebuild
+	fsm-generator.py $< -d $(BUILDDIR) --prefix egg --style table
+
+$(PROTOFSMSRC): egg-proto-fsm.xlsx | prebuild
+	fsm-generator.py $< -d $(BUILDDIR) --prefix egg_proto --style table
 
 $(BUILDSRC): build.org | prebuild
 	org-tangle $<

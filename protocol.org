@@ -3,19 +3,21 @@
 
 ** 通讯命令
 
- | no | cmd     | 说明     |
- |----+---------+----------|
- |  0 | UNKNOWN | 未知命令 |
- |  1 | OPEN    | 开       |
- |  2 | CLOSE   | 关       |
- |  3 | PLAY    | 播放语音 |
+ | no | cmd      | 说明     |
+ |----+----------+----------|
+ |  0 | UNKNOWN  | 未知命令 |
+ |  1 | ACK      | 响应     |
+ |  2 | LOCK-OFF | 开       |
+ |  3 | LOCK-ON  | 关       |
+ |  4 | PLAY     | 播放语音 |
 
 #+begin_src c :noweb-ref command-type
   typedef enum EGG_CMD_TYPE {
     EGG_UNKNOWN = 0x00,
-    EGG_OPEN = 0x01,
-    EGG_CLOSE = 0x02,
-    EGG_PLAY = 0x03,
+    EGG_ACK = 0x01,
+    EGG_LOCK_OFF= 0x02,
+    EGG_LOCK_ON = 0x03,
+    EGG_PLAY = 0x04,
   } egg_cmd_type_t;
 #+end_src
 
@@ -39,18 +41,19 @@
     (int 0 sn)
     (byte 1 cmd)
     (int 2 timestamp)
-    (byte 3 box)
-    (int 4 audio)
+    (byte 3 act-type)
+    (byte 4 box)
+    (int 5 audio)
     )
 #+end_src
 
 命令与数据矩阵
 
-| cmd   | box | audio |
-|-------+-----+-------|
-| OPEN  | ✓   |       |
-| CLOSE | ✓   |       |
-| PLAY  |     | ✓     |
+| cmd      | box | audio |
+|----------+-----+-------|
+| LOCK OFF | ✓   |       |
+| LOCK ON  | ✓   |       |
+| PLAY     |     | ✓     |
 
 ** 数据封包
 
