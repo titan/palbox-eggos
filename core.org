@@ -18,6 +18,10 @@
   #include "defination.h"
   #include "egg-fsm.h"
   #include "epigyny.h"
+  #include "uart.h"
+  #include "lock.h"
+  #include "infrared.h"
+  #include "speaker.h"
 
   volatile uint32_t systick = 0;
   uint32_t egg_state = EGG_LOCKING_ON_STATE;
@@ -28,6 +32,9 @@
   static void setup(void) {
     <<setup-systick>>
     <<setup-epigyny>>
+    <<setup-lock>>
+    <<setup-infrared>>
+    <<setup-speaker>>
     uart_setup();
   }
 
@@ -39,7 +46,9 @@
 
     while (1) {
       // main loop
-      //epigyny_eventloop();
+      infrared_eventloop();
+      uart_eventloop();
+      speaker_eventloop();
       <<main-loop>>
     }
     return 0;
@@ -74,6 +83,18 @@ systick 设置为每 1 毫秒自增一次。
   uart_init(2, &uart2_context);
 #+end_src
 
+*** 锁控
+#+begin_src c :noweb-ref setup-lock
+  lock_setup();
+#+end_src
+*** 红外检测
+#+begin_src c :noweb-ref setup-infrared
+  infrared_setup();
+#+end_src
+*** 音频
+#+begin_src c :noweb-ref setup-speaker
+  speaker_setup();
+#+end_src
 ** 主循环
 在初始化完成后，系统进入主循环，根据当前的状态和发生的事件，推动状态机
 运行。
@@ -581,6 +602,82 @@ egg-proto-fsm.xlsx 文件。
   }
 #+end_src
 ** 红外检测
+#+begin_src c :tangle /dev/shm/eggos/infrared.h
+  #ifndef __INFRARED_H
+  #define __INFRARED_H
+  void infrared_setup(void);
+  void infrared_eventloop(void);
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/infrared.c
+  #include <stdint.h>
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include <libopencm3/stm32/exti.h>
+  #include "infrared.h"
+  #include "lock.h"
+
+  static uint16_t fallen = 0;
+  static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
+  static uint32_t rccs[16] = {RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB};
+  static uint32_t ports[16] = {GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
+  static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
+
+  void infrared_setup(void) {
+    for (uint8_t i = 0; i < 16; i ++) {
+      rcc_periph_clock_enable(rccs[i]);
+      gpio_mode_setup(ports[i], GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, ios[i]);
+      exti_select_source(extis[i], ports[i]);
+      exti_set_trigger(extis[i], EXTI_TRIGGER_FALLING);
+      exti_reset_request(extis[i]);
+      exti_enable_request(extis[i]);
+    }
+    nvic_enable_irq(NVIC_EXTI0_1_IRQ);
+    nvic_enable_irq(NVIC_EXTI2_3_IRQ);
+    nvic_enable_irq(NVIC_EXTI4_15_IRQ);
+  }
+
+  void infrared_eventloop(void) {
+    uint8_t stepper = 0;
+    while (fallen != 0) {
+      if ((fallen & (1 << stepper)) != 0) {
+        lock_on(stepper + 1);
+        fallen &= ~(1 << stepper);
+      }
+      stepper ++;
+    }
+  }
+
+  void exti0_1_isr(void) {
+    if (exti_get_flag_status(EXTI0)) {
+      fallen |= (1 << 0);
+      exti_reset_request(EXTI0);
+    }
+    if (exti_get_flag_status(EXTI1)) {
+      fallen |= (1 << 1);
+      exti_reset_request(EXTI1);
+    }
+  }
+
+  void exti2_3_isr(void) {
+    if (exti_get_flag_status(EXTI2)) {
+      fallen |= (1 << 2);
+      exti_reset_request(EXTI2);
+    }
+    if (exti_get_flag_status(EXTI3)) {
+      fallen |= (1 << 3);
+      exti_reset_request(EXTI3);
+    }
+  }
+
+  void exti4_15_isr(void) {
+    for (uint8_t i = 4; i < 16; i ++) {
+      fallen |= (1 << i);
+      exti_reset_request(extis[i]);
+    }
+  }
+#+end_src
 ** 音频
 
 #+begin_src c :tangle /dev/shm/eggos/speaker.h
