@@ -3,21 +3,23 @@
 
 ** 通讯命令
 
- | no | cmd      | 说明     |
- |----+----------+----------|
- |  0 | UNKNOWN  | 未知命令 |
- |  1 | ACK      | 响应     |
- |  2 | LOCK-OFF | 开       |
- |  3 | LOCK-ON  | 关       |
- |  4 | PLAY     | 播放语音 |
+ | no | cmd            | 说明            |
+ |----+----------------+-----------------|
+ |  0 | UNKNOWN        | 未知命令        |
+ |  1 | ACK            | 响应            |
+ |  2 | LOCK-OFF       | 开锁            |
+ |  3 | LOCK-ON        | 关锁            |
+ |  4 | PLAY           | 播放语音        |
+ |  5 | GPIO           | 设置 GPIO       |
 
 #+begin_src c :noweb-ref command-type
   typedef enum EGG_CMD_TYPE {
     EGG_UNKNOWN = 0x00,
     EGG_ACK = 0x01,
-    EGG_LOCK_OFF= 0x02,
-    EGG_LOCK_ON = 0x03,
-    EGG_PLAY = 0x04,
+    EGG_LOCK_OFF= 0x1B,
+    EGG_LOCK_ON = 0x1A,
+    EGG_PLAY = 0x1C,
+    EGG_GPIO = 0x1D,
   } egg_cmd_type_t;
 #+end_src
 
@@ -41,19 +43,21 @@
     (int 0 sn)
     (byte 1 cmd)
     (int 2 timestamp)
-    (byte 3 act-type)
-    (byte 4 box)
+    (byte 3 ack-type)
+    (byte 4 cabin)
     (int 5 audio)
+    (byte 6 gpio)
     )
 #+end_src
 
 命令与数据矩阵
 
-| cmd      | box | audio |
-|----------+-----+-------|
-| LOCK OFF | ✓   |       |
-| LOCK ON  | ✓   |       |
-| PLAY     |     | ✓     |
+| cmd      | cabin | audio | gpio |
+|----------+-------+-------+------|
+| LOCK OFF | ✓     |       |      |
+| LOCK ON  | ✓     |       |      |
+| PLAY     |       | ✓     |      |
+| GPIO     |       |       | ✓    |
 
 ** 数据封包
 

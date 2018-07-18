@@ -22,6 +22,7 @@
   #include "lock.h"
   #include "infrared.h"
   #include "speaker.h"
+  #include "gpio.h"
 
   volatile uint32_t systick = 0;
   uint32_t egg_state = EGG_LOCKING_ON_STATE;
@@ -35,6 +36,7 @@
     <<setup-lock>>
     <<setup-infrared>>
     <<setup-speaker>>
+    <<setup-gpio>>
     uart_setup();
   }
 
@@ -94,6 +96,10 @@ systick 设置为每 1 毫秒自增一次。
 *** 音频
 #+begin_src c :noweb-ref setup-speaker
   speaker_setup();
+#+end_src
+*** GPIO
+#+begin_src c :noweb-ref setup-gpio
+  gpio_setup();
 #+end_src
 ** 主循环
 在初始化完成后，系统进入主循环，根据当前的状态和发生的事件，推动状态机
@@ -155,6 +161,8 @@ systick 设置为每 1 毫秒自增一次。
   #include "utility.h"
   #include "egg-fsm.h"
   #include "egg-proto-fsm.h"
+  #include "speaker.h"
+  #include "gpio.h"
 
   #define EPIGYNY_BUFFER_BITSIZE 8
 
@@ -313,19 +321,25 @@ egg-proto-fsm.xlsx 文件。
     switch (egg_packet_decode(buf, size, packet)) {
     case EGG_LOCK_OFF: {
       egg_state = egg_transform_state(egg_state, EGG_LOCK_OFF_EVENT, NULL);
-      ackpacket.payload.act_type = EGG_LOCK_OFF;
-      ackpacket.payload.box = packet->payload.box;
+      ackpacket.payload.ack_type = EGG_LOCK_OFF;
+      ackpacket.payload.cabin = packet->payload.cabin;
       break;
     }
     case EGG_LOCK_ON: {
       egg_state = egg_transform_state(egg_state, EGG_LOCK_ON_EVENT, NULL);
-      ackpacket.payload.act_type = EGG_LOCK_OFF;
-      ackpacket.payload.box = packet->payload.box;
+      ackpacket.payload.ack_type = EGG_LOCK_ON;
+      ackpacket.payload.cabin = packet->payload.cabin;
       break;
     }
     case EGG_PLAY:
-      ackpacket.payload.act_type = EGG_LOCK_OFF;
+      speaker_play(packet->payload.audio);
+      ackpacket.payload.ack_type = EGG_PLAY;
       ackpacket.payload.audio = packet->payload.audio;
+      break;
+    case EGG_GPIO:
+      gpio(packet->payload.gpio);
+      ackpacket.payload.ack_type = EGG_GPIO;
+      ackpacket.payload.gpio = packet->payload.gpio;
       break;
     default:
       break;
@@ -802,6 +816,44 @@ egg-proto-fsm.xlsx 文件。
       data >>= 1;
       count_to_send --;
       TIM_SR(SPEAKER_TIM) &= ~TIM_SR_UIF;
+    }
+  }
+#+end_src
+** GPIO
+控制灯光
+#+begin_src c :tangle /dev/shm/eggos/gpio.h
+  #ifndef __GPIO_H
+  #define __GPIO_H
+  #include <stdint.h>
+
+  void gpio_setup(void);
+  void gpio(uint8_t gpio);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/gpio.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "gpio.h"
+
+  static uint32_t rccs[4] = {RCC_GPIOC, RCC_GPIOC, RCC_GPIOC, RCC_GPIOC};
+  static uint32_t ports[4] = {GPIOC, GPIOC, GPIOC, GPIOC};
+  static uint32_t ios[4] = {GPIO0, GPIO1, GPIO2, GPIO3};
+
+  void gpio_setup() {
+    for (uint8_t i = 0; i < 4; i ++) {
+      rcc_periph_clock_enable(rccs[i]);
+      gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+    }
+  }
+
+  void gpio(uint8_t gpio) {
+    for (uint8_t i = 0; i < 4; i ++) {
+      if ((gpio & (1 << i)) != 0) {
+        gpio_set(ports[i], ios[i]);
+      } else {
+        gpio_clear(ports[i], ios[i]);
+      }
     }
   }
 #+end_src

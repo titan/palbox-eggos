@@ -332,7 +332,7 @@
 * Makefile
 #+begin_src makefile :mkdirp yes :tangle /dev/shm/eggos/Makefile
   BINARY = eggos
-  OBJS += base64.o egg-fsm.o egg-proto-fsm.o egg_payload.o egg_packet.o epigyny.o hash.o infrared.o lock.o ring.o speaker.o stack.o uart.o utility.o zeropack.o
+  OBJS += base64.o egg-fsm.o egg-proto-fsm.o egg_payload.o egg_packet.o epigyny.o gpio.o hash.o infrared.o lock.o ring.o speaker.o stack.o uart.o utility.o zeropack.o
 
   CFLAGS += -DZEROPACK_EGG_PAYLOAD_ENABLED
 
