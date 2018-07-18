@@ -545,6 +545,42 @@ egg-proto-fsm.xlsx 文件。
   }
 #+end_src
 ** 锁控
+#+begin_src c :tangle /dev/shm/eggos/lock.h
+  #ifndef __LOCK_H
+  #define __LOCK_H
+  #include <stdint.h>
+
+  void lock_setup(void);
+  void lock_off(uint8_t box);
+  void lock_on(uint8_t box);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/lock.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "lock.h"
+
+  static uint32_t rccs[8] = {RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA};
+  static uint32_t ports[8] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA};
+  static uint32_t ios[8] = {GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8};
+
+  void lock_setup(void) {
+    for (uint8_t i = 0; i < 8; i ++) {
+      rcc_periph_clock_enable(rccs[i]);
+      gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+    }
+  }
+
+  void lock_off(uint8_t box) {
+    gpio_set(ports[box - 1], ios[box - 1]);
+  }
+
+  void lock_on(uint8_t box) {
+    gpio_clear(ports[box - 1], ios[box - 1]);
+  }
+#+end_src
+** 红外检测
 ** 音频
 
 #+begin_src c :tangle /dev/shm/eggos/speaker.h
