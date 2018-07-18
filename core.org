@@ -189,25 +189,25 @@ systick 设置为每 1 毫秒自增一次。
         if (byte == 0x00) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X00_EVENT, ctx);
         } else if (0x01 <= byte && byte <= 0x08) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X01_0X08_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X01_MINUS_0X08_EVENT, ctx);
         } else if (0x09 <= byte && byte <= 0x32) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X09_0X32_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X09_MINUS_0X32_EVENT, ctx);
         } else if (byte == 0x33) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X33_EVENT, ctx);
         } else if (0x34 <= byte && byte <= 0x3B) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X34_0X3B_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X34_MINUS_0X3B_EVENT, ctx);
         } else if (byte == 0x3C) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X3C_EVENT, ctx);
         } else if (0x3D <= byte && byte <= 0xC2) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X3D_0XC2_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X3D_MINUS_0XC2_EVENT, ctx);
         } else if (byte == 0xC3) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XC3_EVENT, ctx);
         } else if (0xC4 <= byte && byte <= 0xCB) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XC4_0XCB_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XC4_MINUS_0XCB_EVENT, ctx);
         } else if (byte == 0xCC) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XCC_EVENT, ctx);
         } else if (0xCD <= byte) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XCD_0XFF_EVENT, ctx);
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XCD_MINUS_0XFF_EVENT, ctx);
         }
         if (ctx->countdown == 0) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_COUNTDOWN_EQUALS_0_EVENT, ctx);
@@ -546,6 +546,132 @@ egg-proto-fsm.xlsx 文件。
 #+end_src
 ** 锁控
 ** 音频
+
+#+begin_src c :tangle /dev/shm/eggos/speaker.h
+  #ifndef _SPEAKER_H
+  #define _SPEAKER_H
+  #include <stdint.h>
+  void speaker_setup(void);
+  void speaker_eventloop(void);
+  void speaker_play(uint16_t idx);
+  void speaker_volume_up(void);
+  void speaker_volume_down(void);
+  void speaker_volume(uint8_t vol);
+  #endif
+#+end_src
+
+#+begin_src c :tangle /dev/shm/eggos/speaker.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include <libopencm3/stm32/timer.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include "speaker.h"
+  #include "defination.h"
+  #include "utility.h"
+  #include "ring.h"
+
+  #define SPEAKER_TIM_RCC     RCC_TIM2
+  #define SPEAKER_GPIO_RCC    RCC_GPIOB
+  #define SPEAKER_TIM         TIM2
+  #define SPEAKER_TIM_RST     RST_TIM2
+  #define SPEAKER_PORT        GPIOB
+  #define SPEAKER_IO          GPIO1
+  #define SPEAKER_NVIC_IRQ    NVIC_TIM2_IRQ
+
+  #define SPEAKER_BUFFER_BITSIZE 4
+
+  struct ring_t speaker_tx;
+  uint8_t speaker_tx_buffer[2 << (SPEAKER_BUFFER_BITSIZE - 1)];
+
+  static volatile uint8_t count_to_send = 0; // count of bit to send
+  static volatile uint16_t data = 0;
+
+  static void speaker_write(uint8_t byte) {
+    while (count_to_send != 0);
+    data = ((((uint16_t)byte) << 1) | 0x0200);
+    count_to_send = 10;
+  }
+
+  void speaker_setup(void) {
+
+    ring_init(&speaker_tx, speaker_tx_buffer, SPEAKER_BUFFER_BITSIZE);
+
+    rcc_periph_clock_enable(SPEAKER_TIM_RCC);
+    rcc_periph_clock_enable(SPEAKER_GPIO_RCC);
+
+    gpio_mode_setup(SPEAKER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLUP, SPEAKER_IO);
+    gpio_set_output_options(SPEAKER_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SPEAKER_IO);
+
+    /* Reset TIM2 peripheral to defaults. */
+    rcc_periph_reset_pulse(SPEAKER_TIM_RST);
+
+    timer_set_mode(SPEAKER_TIM, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
+
+    timer_set_prescaler(SPEAKER_TIM, 499);
+
+    timer_set_period(SPEAKER_TIM, 9);
+
+    /* Enable TIM2 interrupt. */
+
+    nvic_enable_irq(SPEAKER_NVIC_IRQ);
+    timer_enable_update_event(SPEAKER_TIM); /* default at reset! */
+    timer_enable_irq(SPEAKER_TIM, TIM_DIER_UIE);
+    timer_enable_counter(SPEAKER_TIM);
+
+    speaker_play(1); // make speaker work immediately
+  }
+
+  void speaker_play(uint16_t idx) {
+    uint8_t cmd[] = { 0x7E, 0x05, 0x41, 0x00, 0x00, 0x00, 0xEF };
+    cmd[3] = (idx >> 8) & 0xFF;
+    cmd[4] = (idx >> 0) & 0xFF;
+    cmd[5] = cmd[1] ^ cmd[2] ^ cmd[3] ^ cmd[4];
+    ring_write_array(&speaker_tx, cmd, 0, 7);
+  }
+
+  void speaker_volume_up() {
+    uint8_t cmd[] = { 0x7E, 0x03, 0x15, 0x16, 0xEF };
+    ring_write_array(&speaker_tx, cmd, 0, 5);
+  }
+
+  void speaker_volume_down() {
+    uint8_t cmd[] = { 0x7E, 0x03, 0x16, 0x15, 0xEF };
+    ring_write_array(&speaker_tx, cmd, 0, 5);
+  }
+
+  void speaker_volume(uint8_t vol) {
+    uint8_t cmd[] = { 0x7E, 0x04, 0x31, 0x00, 0x00, 0xEF };
+    cmd[3] = vol;
+    cmd[4] = cmd[1] ^ cmd[2] ^ cmd[3];
+    ring_write_array(&speaker_tx, cmd, 0, 6);
+  }
+
+  void speaker_eventloop(void) {
+    if (ring_length(&speaker_tx) > 0) {
+      uint8_t byte = 0;
+      if (ring_read(&speaker_tx, &byte) != 0) {
+        speaker_write(byte);
+      }
+    }
+  }
+
+  void tim2_isr(void) {
+    if (TIM_SR(SPEAKER_TIM) & TIM_SR_UIF) {
+      if (count_to_send == 0) {
+        TIM_SR(SPEAKER_TIM) &= ~TIM_SR_UIF;
+        return;
+      }
+      if ((data & 0x01) == 0) {
+        gpio_clear(SPEAKER_PORT, SPEAKER_IO);
+      } else {
+        gpio_set(SPEAKER_PORT, SPEAKER_IO);
+      }
+      data >>= 1;
+      count_to_send --;
+      TIM_SR(SPEAKER_TIM) &= ~TIM_SR_UIF;
+    }
+  }
+#+end_src
 * 辅助代码
 ** base64
 
