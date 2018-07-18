@@ -582,12 +582,12 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include "lock.h"
 
-  static uint32_t rccs[8] = {RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA};
-  static uint32_t ports[8] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA};
-  static uint32_t ios[8] = {GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8};
+  static uint32_t rccs[16] = {RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA};
+  static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA};
+  static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
 
   void lock_setup(void) {
-    for (uint8_t i = 0; i < 8; i ++) {
+    for (uint8_t i = 0; i < 16; i ++) {
       rcc_periph_clock_enable(rccs[i]);
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
     }
