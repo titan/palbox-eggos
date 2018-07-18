@@ -308,6 +308,12 @@ egg-proto-fsm.xlsx 文件。
 ** 协议回调
 #+begin_src c :noweb-ref proto-callback
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
+
+    if (buf[8] != EGGID && buf[8] != 0xFF) {
+      // skip
+      return;
+    }
+
     uint32_t len = egg_packet_estimate_decode_size(buf, size);
     uint8_t tmp[len];
     bzero(tmp, len);
@@ -318,7 +324,9 @@ egg-proto-fsm.xlsx 文件。
     ackpacket.payload.sn = packet->payload.sn;
     ackpacket.payload.cmd = EGG_ACK;
 
-    switch (egg_packet_decode(buf, size, packet)) {
+    uint32_t cmd = egg_packet_decode(buf, size, packet);
+
+    switch (cmd) {
     case EGG_LOCK_OFF: {
       egg_state = egg_transform_state(egg_state, EGG_LOCK_OFF_EVENT, NULL);
       ackpacket.payload.ack_type = EGG_LOCK_OFF;
