@@ -31,6 +31,7 @@
   volatile uint32_t systick = 0;
   uint32_t egg_states[16] = {EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE};
   uint32_t locking_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  uint32_t delaying_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   struct stack_t egg_stack;
   static uint8_t egg_stack_buffer[2 << (EGG_STACK_BUFFER_BITSIZE - 1)];
 
@@ -136,6 +137,10 @@ REPL通讯挂在串口2上。
         } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_1_MINUTE_TIMEOUT_EVENT, &i);
         }
+      } else if (egg_states[i] == EGG_DELAYING_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, delaying_timers[i], 199)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_DELAY_TIMEOUT_EVENT, &i);
+        }
       }
     }
   }
@@ -146,10 +151,11 @@ REPL通讯挂在串口2上。
 #+begin_src c :noweb-ref egg-fsm-action
   void egg_do_action(enum EGG_ACTION action, void * data) {
     uint8_t cabin = * (uint8_t *) data;
-    switch(action) {
+    switch (action) {
     case EGG_PLAY_WELCOME_NEWLINE_LOCK_OFF_ACTION:
       lock_off(cabin);
       locking_timers[cabin] = systick;
+      delaying_timers[cabin] = systick;
       break;
     case EGG_LOCK_ON_ACTION:
     case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_ACTION:
@@ -687,11 +693,16 @@ egg-proto-fsm.xlsx 文件。
   #include "repl.h"
   #include "utility.h"
   #include "egg-fsm.h"
+  #include "egg-infrared-fsm.h"
 
   static uint16_t fallen = 0;
   static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
   static uint32_t ports[16] = {GPIOC, GPIOC, GPIOD, GPIOB, GPIOB, GPIOB, GPIOF, GPIOF, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA};
   static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
+  static uint32_t infrared_states[16] = {EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE};
+  static uint32_t delay_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  static uint32_t aftercase_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  static uint16_t exti_value = 0XFF;
 
   void infrared_setup(void) {
     rcc_periph_clock_enable(RCC_GPIOA);
@@ -720,10 +731,60 @@ egg-proto-fsm.xlsx 文件。
     uint8_t stepper = 0;
     while (fallen != 0) {
       if ((fallen & (1 << stepper)) != 0) {
-        egg_states[stepper] = egg_transform_state(egg_states[stepper], EGG_INFRARED_TRIGGERED_EVENT, &stepper);
+        infrared_states[stepper] = egg_infrared_transform_state(infrared_states[stepper], EGG_INFRARED_EXTI_EVENT, &stepper);
         fallen &= ~(1 << stepper);
       }
       stepper ++;
+    }
+    for (uint8_t i = 0; i < 16; i ++) {
+      if (infrared_states[i] == EGG_INFRARED_DELAY1_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_DELAY2_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_CHECKING1_STATE) {
+        if ((exti_value & (1 << i)) == 0) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
+        } else {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_CHECKING2_STATE) {
+        if ((exti_value & (1 << i)) == 0) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
+        } else {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_AFTERCASE_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, aftercase_timers[i], 100)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      }
+    }
+  }
+
+  void egg_infrared_do_action(enum EGG_INFRARED_ACTION action, void * data) {
+    uint8_t cabin = * (uint8_t *) data;
+    switch (action) {
+    case EGG_INFRARED_START_DELAYER_ACTION:
+      delay_timers[cabin] = systick;
+      break;
+    case EGG_INFRARED_CHECK_ACTION:
+      if (gpio_get(ports[cabin], ios[cabin]) == 0) {
+        exti_value &= ~(1 << cabin);
+      } else {
+        exti_value |= (1 << cabin);
+      }
+      break;
+    case EGG_INFRARED_CLEAR_ACTION:
+      exti_value |= 1 << cabin;
+      break;
+    case EGG_INFRARED_TRIGGER_ACTION:
+      egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_INFRARED_TRIGGERED_EVENT, &cabin);
+      aftercase_timers[cabin] = systick;
+      break;
     }
   }
 
