@@ -17,27 +17,35 @@
   #include <stdint.h>
   #include "defination.h"
   #include "egg-fsm.h"
+  #include "repl.h"
   #include "epigyny.h"
   #include "uart.h"
   #include "lock.h"
   #include "infrared.h"
   #include "speaker.h"
   #include "gpio.h"
+  #include "stack.h"
+
+  #define EGG_STACK_BUFFER_BITSIZE  4
 
   volatile uint32_t systick = 0;
-  uint32_t egg_state = EGG_LOCKING_ON_STATE;
-  uint32_t locking_timer = 0;
+  uint32_t egg_states[16] = {EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE};
+  uint32_t locking_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  struct stack_t egg_stack;
+  static uint8_t egg_stack_buffer[2 << (EGG_STACK_BUFFER_BITSIZE - 1)];
 
   <<sys-tick-handler>>
 
   static void setup(void) {
+    stack_init(&egg_stack, egg_stack_buffer, EGG_STACK_BUFFER_BITSIZE);
     <<setup-systick>>
     <<setup-epigyny>>
+    <<setup-repl>>
+    uart_setup();
     <<setup-lock>>
     <<setup-infrared>>
     <<setup-speaker>>
     <<setup-gpio>>
-    uart_setup();
   }
 
   <<egg-fsm-action>>
@@ -60,6 +68,8 @@
 *** 时钟
 systick 设置为每 1 毫秒自增一次。
 #+begin_src c :noweb-ref setup-systick
+  rcc_clock_setup_in_hse_8mhz_out_48mhz();
+
   /* 48MHz => 48000000 counts per second */
   systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
 
@@ -75,14 +85,24 @@ systick 设置为每 1 毫秒自增一次。
     systick ++;
   }
 #+end_src
-*** 上位机通讯串口
-上位机通讯挂在串口2上。
+*** REPL通讯串口
+REPL通讯挂在串口2上。
 
-#+begin_src c :noweb-ref setup-epigyny
-  uart2_context.setup = epigyny_setup;
-  uart2_context.eventloop = epigyny_eventloop;
+#+begin_src c :noweb-ref setup-repl
+  uart2_context.setup = repl_setup;
+  uart2_context.eventloop = repl_eventloop;
 
   uart_init(2, &uart2_context);
+#+end_src
+
+*** 上位机通讯串口
+上位机通讯挂在串口1上。
+
+#+begin_src c :noweb-ref setup-epigyny
+  uart1_context.setup = epigyny_setup;
+  uart1_context.eventloop = epigyny_eventloop;
+
+  uart_init(1, &uart1_context);
 #+end_src
 
 *** 锁控
@@ -107,13 +127,15 @@ systick 设置为每 1 毫秒自增一次。
 #+begin_src c :noweb-ref main-loop
   if (UINT32_DIFF_GREATER_THAN(systick, loop_timer, 999)) {
     loop_timer = systick;
-    if (egg_state == EGG_LOCKING_ON_STATE) {
-      if (UINT32_DIFF_GREATER_THAN(systick, locking_timer, 179999)) {
-        egg_state = egg_transform_state(egg_state, EGG_3_MINUTES_TIMEOUT_EVENT, NULL);
-      } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timer, 119999)) {
-        egg_state = egg_transform_state(egg_state, EGG_2_MINUTES_TIMEOUT_EVENT, NULL);
-      } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timer, 59999)) {
-        egg_state = egg_transform_state(egg_state, EGG_1_MINUTE_TIMEOUT_EVENT, NULL);
+    for (uint8_t i = 0; i < 16; i ++) {
+      if (egg_states[i] == EGG_LOCKING_OFF_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 179999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_3_MINUTES_TIMEOUT_EVENT, &i);
+        } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 119999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_2_MINUTES_TIMEOUT_EVENT, &i);
+        } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_1_MINUTE_TIMEOUT_EVENT, &i);
+        }
       }
     }
   }
@@ -123,14 +145,20 @@ systick 设置为每 1 毫秒自增一次。
 核心状态机的定义见 egg-fsm.xlsx 文件。
 #+begin_src c :noweb-ref egg-fsm-action
   void egg_do_action(enum EGG_ACTION action, void * data) {
-    (void) data;
+    uint8_t cabin = * (uint8_t *) data;
     switch(action) {
-    case EGG_PLAY_WELCOME_NEWLINE_LOCK_OFF_ACTION: break;
-    case EGG_LOCK_ON_ACTION: break;
-    case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_ACTION: break;
+    case EGG_PLAY_WELCOME_NEWLINE_LOCK_OFF_ACTION:
+      lock_off(cabin);
+      locking_timers[cabin] = systick;
+      break;
+    case EGG_LOCK_ON_ACTION:
+    case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_ACTION:
+    case EGG_PLAY_3M_TIMEOUT_NEWLINE_LOCK_ON_ACTION: {
+      lock_on(cabin);
+      break;
+    }
     case EGG_PLAY_1M_TIMEOUT_ACTION: break;
     case EGG_PLAY_2M_TIMEOUT_ACTION: break;
-    case EGG_PLAY_3M_TIMEOUT_NEWLINE_LOCK_ON_ACTION: break;
     }
   }
 #+end_src
@@ -142,7 +170,7 @@ systick 设置为每 1 毫秒自增一次。
   #define __EPIGYNY_H
   #include "uart.h"
 
-  extern struct uart_context_t uart2_context;
+  extern struct uart_context_t uart1_context;
 
   void epigyny_setup(struct uart_context_t * ctx);
   void epigyny_eventloop(struct uart_context_t * ctx);
@@ -170,7 +198,7 @@ systick 设置为每 1 毫秒自增一次。
   static struct ring_t epigyny_rx;
   static uint8_t epigyny_tx_buffer[2 << (EPIGYNY_BUFFER_BITSIZE - 1)];
   static uint8_t epigyny_rx_buffer[2 << (EPIGYNY_BUFFER_BITSIZE - 1)];
-  struct uart_context_t uart2_context;
+  struct uart_context_t uart1_context;
   static uint32_t egg_proto_state;
 
   <<proto-context>>
@@ -306,6 +334,8 @@ egg-proto-fsm.xlsx 文件。
   };
 #+end_src
 ** 协议回调
+
+协议上的 cabin 是从 1 开始计数的，在使用时，必须先变成从 0 开始计数的。
 #+begin_src c :noweb-ref proto-callback
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
 
@@ -321,22 +351,29 @@ egg-proto-fsm.xlsx 文件。
 
     struct egg_packet_t ackpacket;
     bzero(&ackpacket, sizeof(struct egg_packet_t));
-    ackpacket.payload.sn = packet->payload.sn;
+    ackpacket.egg = EGGID;
     ackpacket.payload.cmd = EGG_ACK;
 
     uint32_t cmd = egg_packet_decode(buf, size, packet);
+    ackpacket.payload.sn = packet->payload.sn;
 
     switch (cmd) {
     case EGG_LOCK_OFF: {
-      egg_state = egg_transform_state(egg_state, EGG_LOCK_OFF_EVENT, NULL);
-      ackpacket.payload.ack_type = EGG_LOCK_OFF;
-      ackpacket.payload.cabin = packet->payload.cabin;
+      uint8_t cabin = packet->payload.cabin - 1;
+      if (cabin < 16) {
+        egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_LOCK_OFF_EVENT, &cabin);
+        ackpacket.payload.ack_type = EGG_LOCK_OFF;
+        ackpacket.payload.cabin = packet->payload.cabin;
+      }
       break;
     }
     case EGG_LOCK_ON: {
-      egg_state = egg_transform_state(egg_state, EGG_LOCK_ON_EVENT, NULL);
-      ackpacket.payload.ack_type = EGG_LOCK_ON;
-      ackpacket.payload.cabin = packet->payload.cabin;
+      uint8_t cabin = packet->payload.cabin - 1;
+      if (cabin < 16) {
+        egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_LOCK_ON_EVENT, &cabin);
+        ackpacket.payload.ack_type = EGG_LOCK_ON;
+        ackpacket.payload.cabin = packet->payload.cabin;
+      }
       break;
     }
     case EGG_PLAY:
@@ -345,7 +382,7 @@ egg-proto-fsm.xlsx 文件。
       ackpacket.payload.audio = packet->payload.audio;
       break;
     case EGG_GPIO:
-      gpio(packet->payload.gpio);
+      gpio_exclamation_mark(packet->payload.gpio);
       ackpacket.payload.ack_type = EGG_GPIO;
       ackpacket.payload.gpio = packet->payload.gpio;
       break;
@@ -390,7 +427,7 @@ egg-proto-fsm.xlsx 文件。
   typedef void (* uart_setup_fn)(struct uart_context_t * ctx);
   typedef void (* uart_eventloop_fn)(struct uart_context_t * ctx);
   struct uart_context_t {
-    uint16_t baudrate;
+    uint32_t baudrate;
     uint8_t databits, stopbits;
     struct ring_t * tx, * rx;
     uint32_t loop_timer;
@@ -427,7 +464,7 @@ egg-proto-fsm.xlsx 文件。
   };
 
   static int RCC_UART_GPIO[2] = {
-    RCC_GPIOA,
+    RCC_GPIOB,
     RCC_GPIOA,
   };
 
@@ -437,28 +474,33 @@ egg-proto-fsm.xlsx 文件。
   };
 
   static uint32_t TX_GPIO_PORT[2] = {
-    GPIOA,
+    GPIOB,
     GPIOA,
   };
 
   static uint32_t RX_GPIO_PORT[2] = {
-    GPIOA,
+    GPIOB,
     GPIOA,
   };
 
   static int TX_GPIO_IO[2] = {
-    GPIO9,
+    GPIO6,
     GPIO2,
   };
 
   static int RX_GPIO_IO[2] = {
-    GPIO10,
+    GPIO7,
     GPIO3,
   };
 
   static uint32_t UART[2] = {
     USART1,
     USART2,
+  };
+
+  static uint32_t GPIO_AF[2] = {
+    GPIO_AF0,
+    GPIO_AF1,
   };
 
   struct uart_context_t * ctxs[2] = { NULL, NULL };
@@ -480,8 +522,8 @@ egg-proto-fsm.xlsx 文件。
         gpio_mode_setup(TX_GPIO_PORT[i], GPIO_MODE_AF, GPIO_PUPD_NONE, TX_GPIO_IO[i]);
         gpio_mode_setup(RX_GPIO_PORT[i], GPIO_MODE_AF, GPIO_PUPD_NONE, RX_GPIO_IO[i]);
 
-        gpio_set_af(TX_GPIO_PORT[i], GPIO_AF1, TX_GPIO_IO[i]);
-        gpio_set_af(RX_GPIO_PORT[i], GPIO_AF1, RX_GPIO_IO[i]);
+        gpio_set_af(TX_GPIO_PORT[i], GPIO_AF[i], TX_GPIO_IO[i]);
+        gpio_set_af(RX_GPIO_PORT[i], GPIO_AF[i], RX_GPIO_IO[i]);
 
         /* Setup UART parameters. */
         usart_set_baudrate(UART[i], ctxs[i]->baudrate);
@@ -594,8 +636,8 @@ egg-proto-fsm.xlsx 文件。
   #include <stdint.h>
 
   void lock_setup(void);
-  void lock_off(uint8_t box);
-  void lock_on(uint8_t box);
+  void lock_off(uint8_t cabin);
+  void lock_on(uint8_t cabin);
 
   #endif
 #+end_src
@@ -604,23 +646,25 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include "lock.h"
 
-  static uint32_t rccs[16] = {RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA, RCC_GPIOA};
-  static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA};
-  static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
+  static uint32_t ports[16] = {GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC};
+  static uint32_t ios[16] = {GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2, GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7};
 
   void lock_setup(void) {
+    rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
     for (uint8_t i = 0; i < 16; i ++) {
-      rcc_periph_clock_enable(rccs[i]);
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+      gpio_set(ports[i], ios[i]);
     }
   }
 
-  void lock_off(uint8_t box) {
-    gpio_set(ports[box - 1], ios[box - 1]);
+  void lock_off(uint8_t cabin) {
+    gpio_clear(ports[cabin], ios[cabin]);
   }
 
-  void lock_on(uint8_t box) {
-    gpio_clear(ports[box - 1], ios[box - 1]);
+  void lock_on(uint8_t cabin) {
+    gpio_set(ports[cabin], ios[cabin]);
   }
 #+end_src
 ** 红外检测
@@ -637,24 +681,36 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include <libopencm3/cm3/nvic.h>
   #include <libopencm3/stm32/exti.h>
+  #include "defination.h"
   #include "infrared.h"
   #include "lock.h"
+  #include "repl.h"
+  #include "utility.h"
+  #include "egg-fsm.h"
 
   static uint16_t fallen = 0;
   static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
-  static uint32_t rccs[16] = {RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB, RCC_GPIOB};
-  static uint32_t ports[16] = {GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
+  static uint32_t ports[16] = {GPIOC, GPIOC, GPIOD, GPIOB, GPIOB, GPIOB, GPIOF, GPIOF, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA};
   static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
 
   void infrared_setup(void) {
+    rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
+    rcc_periph_clock_enable(RCC_GPIOD);
+    rcc_periph_clock_enable(RCC_GPIOF);
+
+    /* enable syscfg :], or else changing exti source from GPIOA is impossible */
+    rcc_periph_clock_enable(RCC_SYSCFG_COMP);
+
     for (uint8_t i = 0; i < 16; i ++) {
-      rcc_periph_clock_enable(rccs[i]);
       gpio_mode_setup(ports[i], GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, ios[i]);
       exti_select_source(extis[i], ports[i]);
       exti_set_trigger(extis[i], EXTI_TRIGGER_FALLING);
       exti_reset_request(extis[i]);
       exti_enable_request(extis[i]);
     }
+
     nvic_enable_irq(NVIC_EXTI0_1_IRQ);
     nvic_enable_irq(NVIC_EXTI2_3_IRQ);
     nvic_enable_irq(NVIC_EXTI4_15_IRQ);
@@ -664,7 +720,7 @@ egg-proto-fsm.xlsx 文件。
     uint8_t stepper = 0;
     while (fallen != 0) {
       if ((fallen & (1 << stepper)) != 0) {
-        lock_on(stepper + 1);
+        egg_states[stepper] = egg_transform_state(egg_states[stepper], EGG_INFRARED_TRIGGERED_EVENT, &stepper);
         fallen &= ~(1 << stepper);
       }
       stepper ++;
@@ -695,11 +751,20 @@ egg-proto-fsm.xlsx 文件。
 
   void exti4_15_isr(void) {
     for (uint8_t i = 4; i < 16; i ++) {
-      fallen |= (1 << i);
-      exti_reset_request(extis[i]);
+      if (exti_get_flag_status(extis[i])) {
+        fallen |= (1 << i);
+        exti_reset_request(extis[i]);
+      }
     }
   }
 #+end_src
+
+注意：
+
+1. EXTI 和 GPIO 是一一对应关系，EXTI0 只能由 PX0 触发。
+
+2. 如果要 GPIOA 以外的 IO 口都能触发外部中断，必须使能 RCC_SYSCFG_COMP。
+
 ** 音频
 
 #+begin_src c :tangle /dev/shm/eggos/speaker.h
@@ -726,11 +791,11 @@ egg-proto-fsm.xlsx 文件。
   #include "ring.h"
 
   #define SPEAKER_TIM_RCC     RCC_TIM2
-  #define SPEAKER_GPIO_RCC    RCC_GPIOB
+  #define SPEAKER_GPIO_RCC    RCC_GPIOA
   #define SPEAKER_TIM         TIM2
   #define SPEAKER_TIM_RST     RST_TIM2
-  #define SPEAKER_PORT        GPIOB
-  #define SPEAKER_IO          GPIO1
+  #define SPEAKER_PORT        GPIOA
+  #define SPEAKER_IO          GPIO0
   #define SPEAKER_NVIC_IRQ    NVIC_TIM2_IRQ
 
   #define SPEAKER_BUFFER_BITSIZE 4
@@ -835,7 +900,7 @@ egg-proto-fsm.xlsx 文件。
   #include <stdint.h>
 
   void gpio_setup(void);
-  void gpio(uint8_t gpio);
+  void gpio_exclamation_mark(uint8_t gpio);
 
   #endif
 #+end_src
@@ -855,7 +920,7 @@ egg-proto-fsm.xlsx 文件。
     }
   }
 
-  void gpio(uint8_t gpio) {
+  void gpio_exclamation_mark(uint8_t gpio) {
     for (uint8_t i = 0; i < 4; i ++) {
       if ((gpio & (1 << i)) != 0) {
         gpio_set(ports[i], ios[i]);
@@ -863,6 +928,497 @@ egg-proto-fsm.xlsx 文件。
         gpio_clear(ports[i], ios[i]);
       }
     }
+  }
+#+end_src
+* REPL代码
+REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比如查看参数，开
+锁，关锁等。
+** 基本框架
+#+begin_src c :tangle /dev/shm/eggos/repl.h
+  #ifndef __REPL_H
+  #define __REPL_H
+
+  #include "uart.h"
+  #include "ring.h"
+
+  #define _output_string_1(str, line) do {                                \
+    uint32_t len##line = 0;                                               \
+    while (str[len##line] != '\0') {                                      \
+      len##line ++;                                                       \
+    }                                                                     \
+    uint8_t size##line = 0;                                               \
+    if (len##line < 128) {                                                \
+      size##line = 1;                                                     \
+    } else if (len##line< 16384) {                                        \
+      size##line = 2;                                                     \
+    } else if (len##line< 2097152) {                                      \
+      size##line = 3;                                                     \
+    } else {                                                              \
+      size##line = 4;                                                     \
+    }                                                                     \
+    if (len##line + size##line <= ring_available(&repl_tx)) {             \
+      uint32_t reallen##line = len##line;                                 \
+      while (len##line > 0) {                                             \
+        ring_write(&repl_tx, len##line & 0x7F);                           \
+        len##line >>= 7;                                                  \
+      }                                                                   \
+      ring_write_array(&repl_tx, (uint8_t *)str, 0, reallen##line);       \
+    }                                                                     \
+    } while (0)
+
+  #define _output_string_0(str, line) _output_string_1(str, line)
+
+  #define output_string(str) _output_string_0(str, __LINE__)
+
+  #define _output_char_1(chr, line) do {          \
+      if (ring_available(&repl_tx) > 1) {         \
+        ring_write(&repl_tx, 1);                  \
+        ring_write(&repl_tx, chr);                \
+      }                                           \
+    } while(0)
+
+  #define _output_char_0(chr, line) _output_char_1(chr, line)
+
+  #define output_char(chr) _output_char_0(chr, __LINE__)
+
+  #define output_newline() do {                   \
+      output_char('\r');                          \
+      output_char('\n');                          \
+    } while (0)
+
+  #define _output_uint32_1(i, line) do {          \
+      char buf##line[20];                         \
+      bzero(buf##line, 20);                       \
+      uint_to_string(i, buf##line);               \
+      output_string(buf##line);                   \
+    } while (0)
+
+  #define _output_uint32_0(i, line) _output_uint32_1(i, line)
+
+  #define output_uint32(i) _output_uint32_0(i, __LINE__)
+
+  extern struct uart_context_t uart2_context;
+
+  extern struct ring_t repl_tx;
+  extern struct ring_t repl_rx;
+
+  void repl_setup(struct uart_context_t * ctx);
+  void repl_eventloop(struct uart_context_t * ctx);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/repl.c
+  #include <stdint.h>
+  #include <stddef.h>
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/usart.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include "repl.h"
+  #include "stack.h"
+  #include "lock.h"
+  #include "speaker.h"
+  #include "gpio.h"
+  #include "uart.h"
+  #include "egg-repl-fsm.h"
+  #include "egg-repl-lex-fsm.h"
+  #include "utility.h"
+
+  #define REPL_BUFFER_BITSIZE 9
+  #define REPL_STACK_BUFFER_BITSIZE 6
+
+
+  <<repl-lex-context>>
+  struct ring_t repl_tx, repl_rx;
+  static struct egg_repl_lex_context_t repl_lex_context;
+  static uint32_t repl_state, repl_lex_state;
+  struct uart_context_t uart2_context;
+  static struct stack_t repl_stack;
+
+  static uint8_t repl_tx_buffer[2 << (REPL_BUFFER_BITSIZE - 1)];
+  static uint8_t repl_rx_buffer[2 << (REPL_BUFFER_BITSIZE - 1)];
+  static uint8_t repl_stack_buffer[2 << (REPL_STACK_BUFFER_BITSIZE - 1)];
+
+  <<repl-lock-usage>>
+  <<repl-debug-usage>>
+  <<repl-play-usage>>
+  <<repl-volume-usage>>
+  <<repl-gpio-usage>>
+  <<repl-help>>
+  <<repl-lock-on>>
+  <<repl-lock-off>>
+  <<repl-debug-on>>
+  <<repl-debug-off>>
+  <<repl-play>>
+  <<repl-volume>>
+  <<repl-gpio>>
+  <<egg-repl-fsm-action>>
+  <<egg-repl-lex-fsm-action>>
+
+  <<repl-setup>>
+  <<repl-eventloop>>
+#+end_src
+** 配置
+#+begin_src c :noweb-ref repl-setup
+  void repl_setup(struct uart_context_t * ctx) {
+    ring_init(&repl_tx, repl_tx_buffer, REPL_BUFFER_BITSIZE);
+    ring_init(&repl_rx, repl_rx_buffer, REPL_BUFFER_BITSIZE);
+    stack_init(&repl_stack, repl_stack_buffer, REPL_STACK_BUFFER_BITSIZE);
+    ctx->tx = &repl_tx;
+    ctx->rx = &repl_rx;
+    ctx->baudrate = 115200;
+    ctx->databits = 8;
+    ctx->stopbits = 1;
+    ctx->tx_interval = 9; // 10ms
+    ctx->loop_interval = 999; // 1000ms
+    bzero(&repl_lex_context, sizeof(struct egg_repl_lex_context_t));
+    repl_state = EGG_REPL_READY_STATE;
+    repl_lex_state = EGG_REPL_LEX_READY_STATE;
+  }
+#+end_src
+** 主循环
+#+begin_src c :noweb-ref repl-eventloop
+  void repl_eventloop(struct uart_context_t * ctx) {
+    uint32_t rxlen = ring_length(ctx->rx);
+    if (rxlen > 0) {
+      for (uint32_t i = 0; i < rxlen; i ++) {
+        uint8_t byte;
+        ring_read(ctx->rx, &byte);
+        repl_lex_context.byte = byte;
+        if ('a' <= byte && byte <= 'z') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_CHAR_EVENT, &repl_lex_context);
+        } else if ('A' <= byte && byte <= 'Z') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_CHAR_EVENT, &repl_lex_context);
+        } else if ('0' <= byte && byte <= '9') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_DIGITIAL_EVENT, &repl_lex_context);
+        } else if (byte == '\r') {
+          output_char(byte);
+          output_char('\n');
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_CR_EVENT, &repl_lex_context);
+        } else if (byte == '\n') {
+          output_char('\r');
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_CR_EVENT, &repl_lex_context);
+        } else if (byte == '\t') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_TAB_EVENT, &repl_lex_context);
+        } else if (byte == '\b') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_BS_EVENT, &repl_lex_context);
+        } else if (byte == ' ') {
+          output_char(byte);
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_SPACE_EVENT, &repl_lex_context);
+        } else if (byte == 127) {
+          output_char('\b');
+          repl_lex_state = egg_repl_lex_transform_state(repl_lex_state, EGG_REPL_LEX_BS_EVENT, &repl_lex_context);
+        }
+      }
+    }
+  }
+#+end_src
+** 交互状态机
+交互状态机用于解析从上位机发送来的数据。交互状态机的定义见
+egg-repl-fsm.xlsx 文件。
+
+#+begin_src c :noweb-ref egg-repl-fsm-action
+  void egg_repl_do_action(enum EGG_REPL_ACTION action, void * data) {
+    switch (action) {
+    case EGG_REPL_HELP_ACTION:
+      stack_clear(&repl_stack);
+      repl_help();
+      break;
+    case EGG_REPL_LOCK_USAGE_ACTION:
+      stack_clear(&repl_stack);
+      repl_lock_usage();
+      break;
+    case EGG_REPL_NUMBER_ACTION:
+      stack_push(&repl_stack, * (uint8_t *) data);
+      break;
+    case EGG_REPL_LOCK_OFF_ACTION: {
+      uint8_t cabin = 0;
+      stack_top(&repl_stack, &cabin);
+      stack_pop(&repl_stack);
+      repl_lock_off(cabin);
+      break;
+    }
+    case EGG_REPL_LOCK_ON_ACTION: {
+      uint8_t cabin = 0;
+      stack_top(&repl_stack, &cabin);
+      stack_pop(&repl_stack);
+      repl_lock_on(cabin);
+      break;
+    }
+    case EGG_REPL_DEBUG_USAGE_ACTION:
+      stack_clear(&repl_stack);
+      repl_debug_usage();
+      break;
+    case EGG_REPL_DEBUG_ON_ACTION:
+      stack_clear(&repl_stack);
+      repl_debug_on();
+      break;
+    case EGG_REPL_DEBUG_OFF_ACTION:
+      stack_clear(&repl_stack);
+      repl_debug_off();
+      break;
+    case EGG_REPL_PLAY_USAGE_ACTION:
+      stack_clear(&repl_stack);
+      repl_play_usage();
+      break;
+    case EGG_REPL_NUMBER16_ACTION:
+      stack_push(&repl_stack, (* (uint8_t *) data) & 0xFF);
+      stack_push(&repl_stack, ((* (uint16_t *) data) >> 8) & 0xFF);
+      break;
+    case EGG_REPL_PLAY_ACTION: {
+      uint16_t audio = 0;
+      uint8_t msb = 0, lsb = 0;
+      stack_top(&repl_stack, &lsb);
+      stack_pop(&repl_stack);
+      stack_top(&repl_stack, &msb);
+      stack_pop(&repl_stack);
+      audio = (msb << 8) | lsb;
+      repl_play(audio);
+      break;
+    }
+    case EGG_REPL_VOLUME_USAGE_ACTION:
+      stack_clear(&repl_stack);
+      repl_volume_usage();
+      break;
+    case EGG_REPL_VOLUME_ACTION: {
+      uint8_t vol = 0;
+      stack_top(&repl_stack, &vol);
+      stack_pop(&repl_stack);
+      repl_volume(vol);
+      break;
+    }
+    case EGG_REPL_GPIO_USAGE_ACTION:
+      stack_clear(&repl_stack);
+      repl_gpio_usage();
+      break;
+    case EGG_REPL_GPIO_ACTION: {
+      uint8_t gpio = 0;
+      stack_top(&repl_stack, &gpio);
+      stack_pop(&repl_stack);
+      repl_gpio(gpio);
+      break;
+    }
+    }
+  }
+#+end_src
+** 词法解析状态机
+词法解析状态机见 egg-repl-lex-fsm.xlsx。
+#+begin_src c :noweb-ref egg-repl-lex-fsm-action
+  void egg_repl_lex_do_action(enum EGG_REPL_LEX_ACTION action, void * data) {
+    struct egg_repl_lex_context_t * ctx = (struct egg_repl_lex_context_t *) data;
+    switch (action) {
+    case EGG_REPL_LEX_CR_ACTION:
+      repl_state = egg_repl_transform_state(repl_state, EGG_REPL_CR_EVENT, NULL);
+      break;
+    case EGG_REPL_LEX_APPEND_ACTION:
+      ctx->buf[ctx->ptr ++] = ctx->byte;
+      break;
+    case EGG_REPL_LEX_BACKSPACE_ACTION:
+      if (ctx->ptr != 0) {
+        ctx->ptr --;
+      }
+      break;
+    case EGG_REPL_LEX_TOKEN_ACTION:
+    case EGG_REPL_LEX_TOKEN_AND_CR_ACTION:
+      if (ctx->ptr == 4 &&
+          (ctx->buf[0] == 'H' || ctx->buf[0] == 'h') &&
+          (ctx->buf[1] == 'E' || ctx->buf[1] == 'e') &&
+          (ctx->buf[2] == 'L' || ctx->buf[2] == 'l') &&
+          (ctx->buf[3] == 'P' || ctx->buf[3] == 'p')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_HELP_EVENT, NULL);
+      } else if (ctx->ptr == 4 &&
+          (ctx->buf[0] == 'L' || ctx->buf[0] == 'l') &&
+          (ctx->buf[1] == 'O' || ctx->buf[1] == 'o') &&
+          (ctx->buf[2] == 'C' || ctx->buf[2] == 'c') &&
+          (ctx->buf[3] == 'K' || ctx->buf[3] == 'k')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_LOCK_EVENT, NULL);
+      } else if (ctx->ptr == 5 &&
+          (ctx->buf[0] == 'D' || ctx->buf[0] == 'd') &&
+          (ctx->buf[1] == 'E' || ctx->buf[1] == 'e') &&
+          (ctx->buf[2] == 'B' || ctx->buf[2] == 'b') &&
+          (ctx->buf[3] == 'U' || ctx->buf[3] == 'u') &&
+          (ctx->buf[4] == 'G' || ctx->buf[4] == 'g')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_DEBUG_EVENT, NULL);
+      } else if (ctx->ptr == 2 &&
+          (ctx->buf[0] == 'O' || ctx->buf[0] == 'o') &&
+          (ctx->buf[1] == 'N' || ctx->buf[1] == 'n')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_ON_EVENT, NULL);
+      } else if (ctx->ptr == 3 &&
+          (ctx->buf[0] == 'O' || ctx->buf[0] == 'o') &&
+          (ctx->buf[1] == 'F' || ctx->buf[1] == 'f') &&
+          (ctx->buf[2] == 'F' || ctx->buf[2] == 'f')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_OFF_EVENT, NULL);
+      } else if (ctx->ptr == 4 &&
+          (ctx->buf[0] == 'P' || ctx->buf[0] == 'p') &&
+          (ctx->buf[1] == 'L' || ctx->buf[1] == 'l') &&
+          (ctx->buf[2] == 'A' || ctx->buf[2] == 'a') &&
+          (ctx->buf[3] == 'Y' || ctx->buf[3] == 'y')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_PLAY_EVENT, NULL);
+      } else if (ctx->ptr == 6 &&
+          (ctx->buf[0] == 'V' || ctx->buf[0] == 'v') &&
+          (ctx->buf[1] == 'O' || ctx->buf[1] == 'o') &&
+          (ctx->buf[2] == 'L' || ctx->buf[2] == 'l') &&
+          (ctx->buf[3] == 'U' || ctx->buf[3] == 'u') &&
+          (ctx->buf[4] == 'M' || ctx->buf[4] == 'm') &&
+          (ctx->buf[5] == 'E' || ctx->buf[5] == 'e')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_VOLUME_EVENT, NULL);
+      } else if (ctx->ptr == 4 &&
+          (ctx->buf[0] == 'G' || ctx->buf[0] == 'g') &&
+          (ctx->buf[1] == 'P' || ctx->buf[1] == 'p') &&
+          (ctx->buf[2] == 'I' || ctx->buf[2] == 'i') &&
+          (ctx->buf[3] == 'O' || ctx->buf[3] == 'o')) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_GPIO_EVENT, NULL);
+      } else {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_OTHERS_EVENT, NULL);
+      }
+      ctx->ptr = 0;
+      if (action == EGG_REPL_LEX_TOKEN_AND_CR_ACTION) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_CR_EVENT, NULL);
+      }
+      break;
+    case EGG_REPL_LEX_NUMBER_ACTION:
+    case EGG_REPL_LEX_NUMBER_AND_CR_ACTION:
+    case EGG_REPL_LEX_NUMBER_AND_APPEND_ACTION: {
+      uint32_t num = string_to_uint((char *)ctx->buf, ctx->ptr);
+      ctx->ptr = 0;
+      repl_state = egg_repl_transform_state(repl_state, EGG_REPL_NUMBER_EVENT, &num);
+      if (action == EGG_REPL_LEX_NUMBER_AND_CR_ACTION) {
+        repl_state = egg_repl_transform_state(repl_state, EGG_REPL_CR_EVENT, NULL);
+      } else if (action == EGG_REPL_LEX_NUMBER_AND_APPEND_ACTION) {
+        ctx->buf[ctx->ptr ++] = ctx->byte;
+      }
+      break;
+    }
+    }
+  }
+#+end_src
+** 词法解析上下文
+交互上下文里要存放词法解析命令过程中用到的临时数据。
+| name | type   |                                              |
+|------+--------+----------------------------------------------|
+| buf  | [byte] | 解析过程中使用的缓冲区, 命令行长度不超过 128 |
+| ptr  | uint16 | 记录可用缓冲区的位置                         |
+| byte | byte   | 解析的当前数据                               |
+
+#+begin_src c :noweb-ref repl-lex-context
+  struct egg_repl_lex_context_t {
+    uint8_t buf[128];
+    uint16_t ptr;
+    uint8_t byte;
+  };
+#+end_src
+** 交互命令
+*** 帮助信息
+**** help
+#+begin_src c :noweb-ref repl-help
+  static void repl_help(void) {
+    repl_lock_usage();
+    //repl_debug_usage();
+    repl_play_usage();
+    repl_volume_usage();
+    repl_gpio_usage();
+  }
+#+end_src
+**** lock usage
+#+begin_src c :noweb-ref repl-lock-usage
+  static void repl_lock_usage(void) {
+    output_string("LOCK USAGE:\r\n");
+    output_string("  LOCK ON cabin       关锁\r\n");
+    output_string("    cabin             (1~16)\r\n");
+    output_string("  LOCK OFF cabin      关锁\r\n");
+    output_string("    cabin             (1~16)\r\n");
+  }
+#+end_src
+**** debug usage
+#+begin_src c :noweb-ref repl-debug-usage
+  static void repl_debug_usage(void) {
+    output_string("DEBUG USAGE:\r\n");
+    output_string("  DEBUG ON            打开调试\r\n");
+    output_string("  DEBUG OFF           关闭调试\r\n");
+  }
+#+end_src
+**** play usage
+#+begin_src c :noweb-ref repl-play-usage
+  static void repl_play_usage(void) {
+    output_string("PLAY USAGE:\r\n");
+    output_string("  PLAY audio          播放音频\r\n");
+    output_string("    audio             (1~65535)\r\n");
+  }
+#+end_src
+**** volume usage
+#+begin_src c :noweb-ref repl-volume-usage
+  static void repl_volume_usage(void) {
+    output_string("VOLUME USAGE:\r\n");
+    output_string("  VOLUME vol          调节音量\r\n");
+    output_string("    vol               (0~31)\r\n");
+  }
+#+end_src
+**** gpio usage
+#+begin_src c :noweb-ref repl-gpio-usage
+  static void repl_gpio_usage(void) {
+    output_string("GPIO USAGE:\r\n");
+    output_string("  GPIO gpio           设置GPIO\r\n");
+    output_string("    gpio              (0~15)\r\n");
+  }
+#+end_src
+*** 开锁
+REPL 上的 cabin 是从 1 开始计数的，需要调整为从 0 开始计数的。
+#+begin_src c :noweb-ref repl-lock-off
+  static void repl_lock_off(uint8_t cabin) {
+    if (0 < cabin && cabin < 17) {
+      lock_off(cabin - 1);
+    } else {
+      repl_lock_usage();
+    }
+  }
+#+end_src
+*** 关锁
+REPL 上的 cabin 是从 1 开始计数的，需要调整为从 0 开始计数的。
+#+begin_src c :noweb-ref repl-lock-on
+  static void repl_lock_on(uint8_t cabin) {
+    if (0 < cabin && cabin < 17) {
+      lock_on(cabin - 1);
+    } else {
+      repl_lock_usage();
+    }
+  }
+#+end_src
+*** 调试开关
+**** debug on
+#+begin_src c :noweb-ref repl-debug-on
+  static void repl_debug_on(void) {
+  }
+#+end_src
+**** debug off
+#+begin_src c :noweb-ref repl-debug-off
+  static void repl_debug_off(void) {
+  }
+#+end_src
+*** 音频
+**** 播放
+#+begin_src c :noweb-ref repl-play
+  static void repl_play(uint16_t audio) {
+    speaker_play(audio);
+  }
+#+end_src
+**** 设置音量
+#+begin_src c :noweb-ref repl-volume
+  static void repl_volume(uint8_t volume) {
+    if (volume > 31) {
+      volume = 31;
+    }
+    speaker_volume(volume);
+  }
+#+end_src
+*** GPIO
+#+begin_src c :noweb-ref repl-gpio
+  static void repl_gpio(uint8_t gpio) {
+    gpio_exclamation_mark(gpio);
   }
 #+end_src
 * 辅助代码
@@ -1262,7 +1818,8 @@ uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, c
   #define UINT32_DIFF_GREATER_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) > (delta))) || (((a) > (b)) && ((a) - (b) > (delta))))
 
   extern volatile uint32_t systick;
-  extern uint32_t egg_state;
+  extern uint32_t egg_states[16];
+  extern uint32_t locking_timers[16];
 
   #endif
 #+end_src
