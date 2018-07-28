@@ -29,6 +29,7 @@
   #define EGG_STACK_BUFFER_BITSIZE  4
 
   volatile uint32_t systick = 0;
+  uint32_t slot = 0;
   uint32_t egg_states[16] = {EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE};
   uint32_t locking_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   uint32_t delaying_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -69,7 +70,7 @@
 *** 时钟
 systick 设置为每 1 毫秒自增一次。
 #+begin_src c :noweb-ref setup-systick
-  rcc_clock_setup_in_hse_8mhz_out_48mhz();
+  rcc_clock_setup_in_hsi_out_48mhz();
 
   /* 48MHz => 48000000 counts per second */
   systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
@@ -87,23 +88,23 @@ systick 设置为每 1 毫秒自增一次。
   }
 #+end_src
 *** REPL通讯串口
-REPL通讯挂在串口2上。
+REPL通讯挂在串口1上。
 
 #+begin_src c :noweb-ref setup-repl
-  uart2_context.setup = repl_setup;
-  uart2_context.eventloop = repl_eventloop;
+  repl_uart_context.setup = repl_setup;
+  repl_uart_context.eventloop = repl_eventloop;
 
-  uart_init(2, &uart2_context);
+  uart_init(1, &repl_uart_context);
 #+end_src
 
 *** 上位机通讯串口
-上位机通讯挂在串口1上。
+上位机通讯挂在串口2上。
 
 #+begin_src c :noweb-ref setup-epigyny
-  uart1_context.setup = epigyny_setup;
-  uart1_context.eventloop = epigyny_eventloop;
+  epigyny_uart_context.setup = epigyny_setup;
+  epigyny_uart_context.eventloop = epigyny_eventloop;
 
-  uart_init(1, &uart1_context);
+  uart_init(2, &epigyny_uart_context);
 #+end_src
 
 *** 锁控
@@ -129,17 +130,21 @@ REPL通讯挂在串口2上。
   if (UINT32_DIFF_GREATER_THAN(systick, loop_timer, 999)) {
     loop_timer = systick;
     for (uint8_t i = 0; i < 16; i ++) {
-      if (egg_states[i] == EGG_LOCKING_OFF_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 179999)) {
-          egg_states[i] = egg_transform_state(egg_states[i], EGG_3_MINUTES_TIMEOUT_EVENT, &i);
-        } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 119999)) {
-          egg_states[i] = egg_transform_state(egg_states[i], EGG_2_MINUTES_TIMEOUT_EVENT, &i);
-        } else if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
-          egg_states[i] = egg_transform_state(egg_states[i], EGG_1_MINUTE_TIMEOUT_EVENT, &i);
-        }
-      } else if (egg_states[i] == EGG_DELAYING_STATE) {
+      if (egg_states[i] == EGG_DELAYING_STATE) {
         if (UINT32_DIFF_GREATER_THAN(systick, delaying_timers[i], 199)) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_DELAY_TIMEOUT_EVENT, &i);
+        }
+      } else if (egg_states[i] == EGG_LOCKING_OFF_1M_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_1_MINUTE_TIMEOUT_EVENT, &i);
+        }
+      } else if (egg_states[i] == EGG_LOCKING_OFF_2M_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 119999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_2_MINUTES_TIMEOUT_EVENT, &i);
+        }
+      } else if (egg_states[i] == EGG_LOCKING_OFF_3M_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 179999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_3_MINUTES_TIMEOUT_EVENT, &i);
         }
       }
     }
@@ -147,6 +152,22 @@ REPL通讯挂在串口2上。
 #+end_src
 
 ** 核心状态机
+核心流程：
+
+1. 接收到开锁指令，开锁。
+
+2. 延迟 200 MS 开始检查落蛋事件，这样是为了绕开因开锁的干扰导致检测到
+   的落蛋事件。
+
+3. 若 1 分钟内未检测到落蛋事件，播放提示语音。
+
+4. 若 2 分钟内未检测到落蛋事件，播放提示语音。
+
+5. 若 3 分钟内未检测到落蛋事件，播放提示语音并关锁。
+
+6. 在开锁后（含延迟 200 MS）三分钟内的任意时刻，检测到落蛋事件，播放提
+   示语音并关锁。
+
 核心状态机的定义见 egg-fsm.xlsx 文件。
 #+begin_src c :noweb-ref egg-fsm-action
   void egg_do_action(enum EGG_ACTION action, void * data) {
@@ -154,17 +175,28 @@ REPL通讯挂在串口2上。
     switch (action) {
     case EGG_PLAY_WELCOME_NEWLINE_LOCK_OFF_ACTION:
       lock_off(cabin);
+      speaker_play(1);
       locking_timers[cabin] = systick;
       delaying_timers[cabin] = systick;
       break;
     case EGG_LOCK_ON_ACTION:
-    case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_ACTION:
-    case EGG_PLAY_3M_TIMEOUT_NEWLINE_LOCK_ON_ACTION: {
       lock_on(cabin);
       break;
-    }
-    case EGG_PLAY_1M_TIMEOUT_ACTION: break;
-    case EGG_PLAY_2M_TIMEOUT_ACTION: break;
+    case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_NEWLINE_FALLEN_ACTION:
+      lock_on(cabin);
+      epigyny_fallen(cabin);
+      speaker_play(2);
+      break;
+    case EGG_PLAY_3M_NEWLINE_LOCK_ON_ACTION:
+      lock_on(cabin);
+      speaker_play(5);
+      break;
+    case EGG_PLAY_1M_ACTION:
+      speaker_play(3);
+      break;
+    case EGG_PLAY_2M_ACTION:
+      speaker_play(4);
+      break;
     }
   }
 #+end_src
@@ -176,13 +208,15 @@ REPL通讯挂在串口2上。
   #define __EPIGYNY_H
   #include "uart.h"
 
-  extern struct uart_context_t uart1_context;
+  extern struct uart_context_t epigyny_uart_context;
 
   void epigyny_setup(struct uart_context_t * ctx);
   void epigyny_eventloop(struct uart_context_t * ctx);
+  <<fallen-prototype>>
   #endif
 #+end_src
 #+begin_src c :noweb yes :mkdirp yes :tangle /dev/shm/eggos/epigyny.c
+  #include <libopencm3/stm32/gpio.h>
   #include <libopencm3/stm32/rcc.h>
   #include <libopencm3/stm32/usart.h>
   #include <libopencm3/cm3/nvic.h>
@@ -204,7 +238,7 @@ REPL通讯挂在串口2上。
   static struct ring_t epigyny_rx;
   static uint8_t epigyny_tx_buffer[2 << (EPIGYNY_BUFFER_BITSIZE - 1)];
   static uint8_t epigyny_rx_buffer[2 << (EPIGYNY_BUFFER_BITSIZE - 1)];
-  struct uart_context_t uart1_context;
+  struct uart_context_t epigyny_uart_context;
   static uint32_t egg_proto_state;
 
   <<proto-context>>
@@ -214,6 +248,7 @@ REPL通讯挂在串口2上。
   <<epigyny-eventloop>>
   <<proto-callback>>
   <<egg-proto-fsm-action>>
+  <<fallen>>
 #+end_src
 ** 配置
 #+begin_src c :noweb-ref epigyny-setup
@@ -227,6 +262,11 @@ REPL通讯挂在串口2上。
     ctx->stopbits = 1;
     ctx->tx_interval = 99; // 100ms
     ctx->loop_interval = 999; // 1s
+    ctx->slot_enabled = 1;
+    ctx->manual = 1;
+    ctx->flow_rcc = RCC_GPIOF;
+    ctx->flow_port = GPIOF;
+    ctx->flow_io = GPIO4;
     bzero(&context, sizeof(struct egg_proto_context_t));
     egg_proto_state = EGG_PROTO_READY_STATE;
   }
@@ -251,10 +291,8 @@ REPL通讯挂在串口2上。
         ctx->byte = byte;
         if (byte == 0x00) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X00_EVENT, ctx);
-        } else if (0x01 <= byte && byte <= 0x08) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X01_MINUS_0X08_EVENT, ctx);
-        } else if (0x09 <= byte && byte <= 0x32) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X09_MINUS_0X32_EVENT, ctx);
+        } else if (0x01 <= byte && byte <= 0x32) {
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X01_MINUS_0X32_EVENT, ctx);
         } else if (byte == 0x33) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X33_EVENT, ctx);
         } else if (0x34 <= byte && byte <= 0x3B) {
@@ -299,6 +337,10 @@ egg-proto-fsm.xlsx 文件。
       bzero(ctx, sizeof(struct egg_proto_context_t));
       ctx->countdown = (uint32_t) 0xFFFFFFFF;
       break;
+    case EGG_PROTO_APPEND_AND_SAVE_TYPE_ACTION:
+      ctx->buf[ctx->ptr ++] = ctx->byte;
+      ctx->type = ctx->byte;
+      break;
     case EGG_PROTO_APPEND_AND_SAVE_LEN0_ACTION:
       ctx->buf[ctx->ptr ++] = ctx->byte;
       ctx->len0 = ctx->byte;
@@ -311,6 +353,7 @@ egg-proto-fsm.xlsx 文件。
     case EGG_PROTO_CALLBACK_ACTION:
       epigyny_callback(ctx->buf, ctx->ptr);
       bzero(ctx, sizeof(struct egg_proto_context_t));
+      ctx->countdown = (uint32_t) 0xFFFFFFFF;
       break;
     }
   }
@@ -321,7 +364,7 @@ egg-proto-fsm.xlsx 文件。
 | name      | type   |                                                                                 |
 |-----------+--------+---------------------------------------------------------------------------------|
 | buf       | [byte] | 解析过程中使用的缓冲区                                                          |
-| ptr       | uint16 | 记录可用缓冲区的位置                                                            |
+| ptr       | uint32 | 记录可用缓冲区的位置                                                            |
 | byte      | byte   | 解析的当前数据                                                                  |
 | len0      | byte   | 包中 base64 内容的数据长度的低 8 位                                             |
 | len1      | byte   | 包中 base64 内容的数据长度的高 8 位                                             |
@@ -331,8 +374,9 @@ egg-proto-fsm.xlsx 文件。
 #+begin_src c :noweb-ref proto-context
   struct egg_proto_context_t {
     uint8_t buf[512];
-    uint16_t ptr;
+    uint32_t ptr;
     uint8_t byte;
+    uint8_t type;
     uint8_t len0;
     uint8_t len1;
     uint32_t countdown;
@@ -343,10 +387,21 @@ egg-proto-fsm.xlsx 文件。
 
 协议上的 cabin 是从 1 开始计数的，在使用时，必须先变成从 0 开始计数的。
 #+begin_src c :noweb-ref proto-callback
+  #include "repl.h"
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
 
-    if (buf[8] != EGGID && buf[8] != 0xFF) {
-      // skip
+    if (buf[8] == 0xFF) {
+      slot = systick + 100 * EGGID;
+      return;
+    }
+
+    if (buf[8] != EGG) {
+      // it's not my device type, skip it
+      return;
+    }
+
+    if (buf[9] != EGGID && buf[9] != 0xFF) {
+      // it's not my packet, skip it
       return;
     }
 
@@ -360,7 +415,7 @@ egg-proto-fsm.xlsx 文件。
     ackpacket.egg = EGGID;
     ackpacket.payload.cmd = EGG_ACK;
 
-    uint32_t cmd = egg_packet_decode(buf, size, packet);
+    uint32_t cmd = egg_packet_decode(buf, size, len, packet);
     ackpacket.payload.sn = packet->payload.sn;
 
     switch (cmd) {
@@ -422,6 +477,42 @@ egg-proto-fsm.xlsx 文件。
   }
 #+end_src
 
+** 落蛋上报
+#+begin_src c :noweb-ref fallen-prototype
+  void epigyny_fallen(uint8_t cabin);
+#+end_src
+
+#+begin_src c :noweb-ref fallen
+  void epigyny_fallen(uint8_t cabin) {
+    struct egg_packet_t packet;
+    bzero(&packet, sizeof(struct egg_packet_t));
+    packet.egg = EGGID;
+    packet.payload.cmd = EGG_FALLEN;
+    packet.payload.cabin = cabin + 1;
+    uint32_t len = egg_packet_calculate_encode_size(&packet);
+    uint8_t size_of_len = 0;
+    if (len < 128) {
+      size_of_len = 1;
+    } else if (len < 16384) {
+      size_of_len = 2;
+    } else if (len < 2097152) {
+      size_of_len = 3;
+    } else {
+      size_of_len = 4;
+    }
+    if (ring_available(&epigyny_tx) >= len + size_of_len) {
+      uint8_t buf[len];
+      bzero(buf, len);
+      uint32_t reallen = egg_packet_encode(&packet, buf, len);
+      len = reallen;
+      while (len > 0) {
+        ring_write(&epigyny_tx, len & 0x7F);
+        len = len >> 7;
+      }
+      ring_write_array(&epigyny_tx, buf, 0, reallen);
+    }
+  }
+#+end_src
 * 驱动代码
 ** 串口
 #+begin_src c :tangle /dev/shm/eggos/uart.h
@@ -441,11 +532,15 @@ egg-proto-fsm.xlsx 文件。
     uint32_t tx_timer;
     uint32_t tx_interval;
     uint32_t tx_to_send;
+    uint8_t slot_enabled;
+    uint8_t manual;
+    uint32_t flow_port;
+    uint32_t flow_io;
+    uint32_t flow_rcc;
     //uint8_t uart;
     uart_setup_fn setup;
     uart_eventloop_fn eventloop;
   };
-
 
   void uart_init(uint8_t idx, struct uart_context_t * ctx);
   void uart_setup(void);
@@ -530,6 +625,11 @@ egg-proto-fsm.xlsx 文件。
 
         gpio_set_af(TX_GPIO_PORT[i], GPIO_AF[i], TX_GPIO_IO[i]);
         gpio_set_af(RX_GPIO_PORT[i], GPIO_AF[i], RX_GPIO_IO[i]);
+        if (ctxs[i]->manual == 1) {
+          rcc_periph_clock_enable(ctxs[i]->flow_rcc);
+          gpio_mode_setup(ctxs[i]->flow_port, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ctxs[i]->flow_io);
+          gpio_clear(ctxs[i]->flow_port, ctxs[i]->flow_io);
+        }
 
         /* Setup UART parameters. */
         usart_set_baudrate(UART[i], ctxs[i]->baudrate);
@@ -539,7 +639,7 @@ egg-proto-fsm.xlsx 文件。
         usart_set_parity(UART[i], USART_PARITY_NONE);
         usart_set_flow_control(UART[i], USART_FLOWCONTROL_NONE);
 
-        /* Enable LOCK Receive interrupt. */
+        /* Enable receive interrupt. */
         USART_CR1(UART[i]) |= USART_CR1_RXNEIE;
 
         /* Finally enable the USART. */
@@ -554,6 +654,7 @@ egg-proto-fsm.xlsx 文件。
       if (ctx != NULL) {
         if (UINT32_DIFF_GREATER_THAN(systick, ctx->loop_timer, ctx->loop_interval)) {
           ctx->loop_timer = systick;
+          ctx->eventloop(ctx);
         }
         if (UINT32_DIFF_GREATER_THAN(systick, ctx->tx_timer, ctx->tx_interval)) {
           ctx->tx_timer = systick;
@@ -572,13 +673,26 @@ egg-proto-fsm.xlsx 文件。
               len |= (byte & 0x7F) << (count * 7);
 
               ctx->tx_to_send = len;
+            }
+          } else if (ctx->slot_enabled == 1) {
+            if (UINT32_DIFF_GREATER_THAN(systick, slot, 0) && (UINT32_DIFF_GREATER_THAN(slot + 100, systick, 0))) {
+              if (ctx->manual == 1) {
+                gpio_set(ctx->flow_port, ctx->flow_io);
+              }
               USART_CR1(UART[i]) |= USART_CR1_TXEIE;
+            } else {
+              USART_CR1(UART[i]) &= ~USART_CR1_TXEIE;
+              if (ctx->manual == 1) {
+                gpio_clear(ctx->flow_port, ctx->flow_io);
+              }
             }
           } else {
+            if (ctx->manual == 1) {
+              gpio_set(ctx->flow_port, ctx->flow_io);
+            }
             USART_CR1(UART[i]) |= USART_CR1_TXEIE;
           }
         }
-        ctx->eventloop(ctx);
       }
     }
   }
@@ -611,6 +725,11 @@ egg-proto-fsm.xlsx 文件。
     if (((USART_CR1(UART[idx]) & USART_CR1_TXEIE) != 0) && ((USART_ISR(UART[idx]) & USART_ISR_TXE) != 0)) {
       if (ctx->tx_to_send == 0) {
         USART_CR1(UART[idx]) &= ~USART_CR1_TXEIE;
+        if (ctx->manual == 1) {
+          /* Enable transmission complete interrupt. */
+          USART_CR1(UART[idx]) |= USART_CR1_TCIE;
+        }
+
         return;
       }
 
@@ -623,6 +742,15 @@ egg-proto-fsm.xlsx 文件。
         /* Put data into the transmit register. */
         usart_send(UART[idx], data);
         ctx->tx_to_send --;
+      }
+    }
+
+    /* Check if we were called because of TC. */
+    if (((USART_CR1(UART[idx]) & USART_CR1_TCIE) != 0) && ((USART_ISR(UART[idx]) & USART_ISR_TC) != 0)) {
+      if (ctx->tx_to_send == 0) {
+        USART_CR1(UART[idx]) &= ~USART_CR1_TCIE;
+        gpio_clear(ctx->flow_port, ctx->flow_io);
+        return;
       }
     }
   }
@@ -652,8 +780,8 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include "lock.h"
 
-  static uint32_t ports[16] = {GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC};
-  static uint32_t ios[16] = {GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2, GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7};
+  static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
+  static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
 
   void lock_setup(void) {
     rcc_periph_clock_enable(RCC_GPIOA);
@@ -661,16 +789,16 @@ egg-proto-fsm.xlsx 文件。
     rcc_periph_clock_enable(RCC_GPIOC);
     for (uint8_t i = 0; i < 16; i ++) {
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
-      gpio_set(ports[i], ios[i]);
+      gpio_clear(ports[i], ios[i]);
     }
   }
 
   void lock_off(uint8_t cabin) {
-    gpio_clear(ports[cabin], ios[cabin]);
+    gpio_set(ports[cabin], ios[cabin]);
   }
 
   void lock_on(uint8_t cabin) {
-    gpio_set(ports[cabin], ios[cabin]);
+    gpio_clear(ports[cabin], ios[cabin]);
   }
 #+end_src
 ** 红外检测
@@ -699,6 +827,8 @@ egg-proto-fsm.xlsx 文件。
   static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
   static uint32_t ports[16] = {GPIOC, GPIOC, GPIOD, GPIOB, GPIOB, GPIOB, GPIOF, GPIOF, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA};
   static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
+  static uint8_t exti_to_idx[16] = {14, 15, 8, 9, 10, 11, 1, 2, 12, 13, 5, 6, 7, 0, 3, 4};
+  static uint8_t idx_to_exti[16] = {13, 6, 7, 14, 15, 10, 11, 12, 2, 3, 4, 5, 8, 9, 0, 1};
   static uint32_t infrared_states[16] = {EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE};
   static uint32_t delay_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   static uint32_t aftercase_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -772,7 +902,7 @@ egg-proto-fsm.xlsx 文件。
       delay_timers[cabin] = systick;
       break;
     case EGG_INFRARED_CHECK_ACTION:
-      if (gpio_get(ports[cabin], ios[cabin]) == 0) {
+      if (gpio_get(ports[idx_to_exti[cabin]], ios[idx_to_exti[cabin]]) == 0) {
         exti_value &= ~(1 << cabin);
       } else {
         exti_value |= (1 << cabin);
@@ -784,28 +914,33 @@ egg-proto-fsm.xlsx 文件。
     case EGG_INFRARED_TRIGGER_ACTION:
       egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_INFRARED_TRIGGERED_EVENT, &cabin);
       aftercase_timers[cabin] = systick;
+      if (debug == 1) {
+        output_string("Infrared ");
+        output_uint32(cabin + 1);
+        output_string(" triggered\r\n");
+      }
       break;
     }
   }
 
   void exti0_1_isr(void) {
     if (exti_get_flag_status(EXTI0)) {
-      fallen |= (1 << 0);
+      fallen |= (1 << exti_to_idx[0]);
       exti_reset_request(EXTI0);
     }
     if (exti_get_flag_status(EXTI1)) {
-      fallen |= (1 << 1);
+      fallen |= (1 << exti_to_idx[1]);
       exti_reset_request(EXTI1);
     }
   }
 
   void exti2_3_isr(void) {
     if (exti_get_flag_status(EXTI2)) {
-      fallen |= (1 << 2);
+      fallen |= (1 << exti_to_idx[2]);
       exti_reset_request(EXTI2);
     }
     if (exti_get_flag_status(EXTI3)) {
-      fallen |= (1 << 3);
+      fallen |= (1 << exti_to_idx[3]);
       exti_reset_request(EXTI3);
     }
   }
@@ -813,7 +948,7 @@ egg-proto-fsm.xlsx 文件。
   void exti4_15_isr(void) {
     for (uint8_t i = 4; i < 16; i ++) {
       if (exti_get_flag_status(extis[i])) {
-        fallen |= (1 << i);
+        fallen |= (1 << exti_to_idx[i]);
         exti_reset_request(extis[i]);
       }
     }
@@ -835,8 +970,6 @@ egg-proto-fsm.xlsx 文件。
   void speaker_setup(void);
   void speaker_eventloop(void);
   void speaker_play(uint16_t idx);
-  void speaker_volume_up(void);
-  void speaker_volume_down(void);
   void speaker_volume(uint8_t vol);
   #endif
 #+end_src
@@ -856,7 +989,7 @@ egg-proto-fsm.xlsx 文件。
   #define SPEAKER_TIM         TIM2
   #define SPEAKER_TIM_RST     RST_TIM2
   #define SPEAKER_PORT        GPIOA
-  #define SPEAKER_IO          GPIO0
+  #define SPEAKER_IO          GPIO1
   #define SPEAKER_NVIC_IRQ    NVIC_TIM2_IRQ
 
   #define SPEAKER_BUFFER_BITSIZE 4
@@ -899,7 +1032,8 @@ egg-proto-fsm.xlsx 文件。
     timer_enable_irq(SPEAKER_TIM, TIM_DIER_UIE);
     timer_enable_counter(SPEAKER_TIM);
 
-    speaker_play(1); // make speaker work immediately
+    speaker_volume(15);
+    speaker_volume(15);
   }
 
   void speaker_play(uint16_t idx) {
@@ -908,16 +1042,6 @@ egg-proto-fsm.xlsx 文件。
     cmd[4] = (idx >> 0) & 0xFF;
     cmd[5] = cmd[1] ^ cmd[2] ^ cmd[3] ^ cmd[4];
     ring_write_array(&speaker_tx, cmd, 0, 7);
-  }
-
-  void speaker_volume_up() {
-    uint8_t cmd[] = { 0x7E, 0x03, 0x15, 0x16, 0xEF };
-    ring_write_array(&speaker_tx, cmd, 0, 5);
-  }
-
-  void speaker_volume_down() {
-    uint8_t cmd[] = { 0x7E, 0x03, 0x16, 0x15, 0xEF };
-    ring_write_array(&speaker_tx, cmd, 0, 5);
   }
 
   void speaker_volume(uint8_t vol) {
@@ -970,13 +1094,13 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include "gpio.h"
 
-  static uint32_t rccs[4] = {RCC_GPIOC, RCC_GPIOC, RCC_GPIOC, RCC_GPIOC};
-  static uint32_t ports[4] = {GPIOC, GPIOC, GPIOC, GPIOC};
-  static uint32_t ios[4] = {GPIO0, GPIO1, GPIO2, GPIO3};
+  static uint32_t ports[4] = {GPIOC, GPIOC, GPIOB, GPIOB};
+  static uint32_t ios[4] = {GPIO4, GPIO5, GPIO0, GPIO1};
 
   void gpio_setup() {
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
     for (uint8_t i = 0; i < 4; i ++) {
-      rcc_periph_clock_enable(rccs[i]);
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
     }
   }
@@ -1029,23 +1153,29 @@ REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比�
 
   #define _output_string_0(str, line) _output_string_1(str, line)
 
-  #define output_string(str) _output_string_0(str, __LINE__)
+  #define output_string(str) _output_string_0(str, __LINE__);
 
-  #define _output_char_1(chr, line) do {          \
-      if (ring_available(&repl_tx) > 1) {         \
-        ring_write(&repl_tx, 1);                  \
-        ring_write(&repl_tx, chr);                \
-      }                                           \
+  #define _output_char_1(chr, line) do {                  \
+      if (ring_available(&repl_tx) > 1) {                 \
+        uint8_t buf##line[2] = { 0x01, chr };             \
+        ring_write_array(&repl_tx, buf##line, 0, 2);      \
+      }                                                   \
     } while(0)
 
   #define _output_char_0(chr, line) _output_char_1(chr, line)
 
   #define output_char(chr) _output_char_0(chr, __LINE__)
 
-  #define output_newline() do {                   \
-      output_char('\r');                          \
-      output_char('\n');                          \
+  #define _output_newline_1(line) do {                    \
+      if (ring_available(&repl_tx) > 2) {                 \
+        uint8_t buf##line[3] = { 0x02, '\r', '\n' };      \
+        ring_write_array(&repl_tx, buf##line, 0, 3);      \
+      }                                                   \
     } while (0)
+
+  #define _output_newline_0(line) _output_newline_1(line)
+
+  #define output_newline() _output_newline_0(__LINE__)
 
   #define _output_uint32_1(i, line) do {          \
       char buf##line[20];                         \
@@ -1058,10 +1188,38 @@ REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比�
 
   #define output_uint32(i) _output_uint32_0(i, __LINE__)
 
-  extern struct uart_context_t uart2_context;
+  #define _output_byte_1(b, line) do {                            \
+      for (uint8_t i##line = 0; i##line < 2; i##line ++) {        \
+        switch ((b >> (8 - 4 * (i##line + 1))) & 0x0F) {          \
+        case 0x00: output_char('0'); break;                       \
+        case 0x01: output_char('1'); break;                       \
+        case 0x02: output_char('2'); break;                       \
+        case 0x03: output_char('3'); break;                       \
+        case 0x04: output_char('4'); break;                       \
+        case 0x05: output_char('5'); break;                       \
+        case 0x06: output_char('6'); break;                       \
+        case 0x07: output_char('7'); break;                       \
+        case 0x08: output_char('8'); break;                       \
+        case 0x09: output_char('9'); break;                       \
+        case 0x0A: output_char('A'); break;                       \
+        case 0x0B: output_char('B'); break;                       \
+        case 0x0C: output_char('C'); break;                       \
+        case 0x0D: output_char('D'); break;                       \
+        case 0x0E: output_char('E'); break;                       \
+        case 0x0F: output_char('F'); break;                       \
+        }                                                         \
+      }                                                           \
+    } while (0)
+
+  #define _output_byte_0(b, line) _output_byte_1(b, line)
+
+  #define output_byte(b) _output_byte_0(b, __LINE__)
+
+  extern struct uart_context_t repl_uart_context;
 
   extern struct ring_t repl_tx;
   extern struct ring_t repl_rx;
+  extern uint8_t debug;
 
   void repl_setup(struct uart_context_t * ctx);
   void repl_eventloop(struct uart_context_t * ctx);
@@ -1084,15 +1242,15 @@ REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比�
   #include "egg-repl-lex-fsm.h"
   #include "utility.h"
 
-  #define REPL_BUFFER_BITSIZE 9
+  #define REPL_BUFFER_BITSIZE 10
   #define REPL_STACK_BUFFER_BITSIZE 6
 
-
   <<repl-lex-context>>
+  uint8_t debug = 0;
   struct ring_t repl_tx, repl_rx;
   static struct egg_repl_lex_context_t repl_lex_context;
   static uint32_t repl_state, repl_lex_state;
-  struct uart_context_t uart2_context;
+  struct uart_context_t repl_uart_context;
   static struct stack_t repl_stack;
 
   static uint8_t repl_tx_buffer[2 << (REPL_BUFFER_BITSIZE - 1)];
@@ -1129,8 +1287,10 @@ REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比�
     ctx->baudrate = 115200;
     ctx->databits = 8;
     ctx->stopbits = 1;
-    ctx->tx_interval = 9; // 10ms
-    ctx->loop_interval = 999; // 1000ms
+    ctx->tx_interval = 1; // 10ms
+    ctx->loop_interval = 9; // 10ms
+    ctx->slot_enabled = 0;
+    ctx->manual = 0;
     bzero(&repl_lex_context, sizeof(struct egg_repl_lex_context_t));
     repl_state = EGG_REPL_READY_STATE;
     repl_lex_state = EGG_REPL_LEX_READY_STATE;
@@ -1234,9 +1394,9 @@ egg-repl-fsm.xlsx 文件。
     case EGG_REPL_PLAY_ACTION: {
       uint16_t audio = 0;
       uint8_t msb = 0, lsb = 0;
-      stack_top(&repl_stack, &lsb);
-      stack_pop(&repl_stack);
       stack_top(&repl_stack, &msb);
+      stack_pop(&repl_stack);
+      stack_top(&repl_stack, &lsb);
       stack_pop(&repl_stack);
       audio = (msb << 8) | lsb;
       repl_play(audio);
@@ -1453,11 +1613,13 @@ REPL 上的 cabin 是从 1 开始计数的，需要调整为从 0 开始计数�
 **** debug on
 #+begin_src c :noweb-ref repl-debug-on
   static void repl_debug_on(void) {
+    debug = 1;
   }
 #+end_src
 **** debug off
 #+begin_src c :noweb-ref repl-debug-off
   static void repl_debug_off(void) {
+    debug = 0;
   }
 #+end_src
 *** 音频
@@ -1879,6 +2041,7 @@ uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, c
   #define UINT32_DIFF_GREATER_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) > (delta))) || (((a) > (b)) && ((a) - (b) > (delta))))
 
   extern volatile uint32_t systick;
+  extern uint32_t slot;
   extern uint32_t egg_states[16];
   extern uint32_t locking_timers[16];
 

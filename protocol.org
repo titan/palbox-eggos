@@ -1,16 +1,16 @@
 #+STARTUP: indent
 * 通讯协议
-
 ** 通讯命令
 
- | no | cmd            | 说明            |
- |----+----------------+-----------------|
- |  0 | UNKNOWN        | 未知命令        |
- |  1 | ACK            | 响应            |
- |  2 | LOCK-OFF       | 开锁            |
- |  3 | LOCK-ON        | 关锁            |
- |  4 | PLAY           | 播放语音        |
- |  5 | GPIO           | 设置 GPIO       |
+ | no | cmd      | 说明      |
+ |----+----------+-----------|
+ |  0 | UNKNOWN  | 未知命令  |
+ |  1 | ACK      | 响应      |
+ | 27 | LOCK-OFF | 开锁      |
+ | 26 | LOCK-ON  | 关锁      |
+ | 28 | PLAY     | 播放语音  |
+ | 29 | GPIO     | 设置 GPIO |
+ | 30 | FALLEN   | 掉落通知  |
 
 #+begin_src c :noweb-ref command-type
   typedef enum EGG_CMD_TYPE {
@@ -20,6 +20,7 @@
     EGG_LOCK_ON = 0x1A,
     EGG_PLAY = 0x1C,
     EGG_GPIO = 0x1D,
+    EGG_FALLEN = 0x1E,
   } egg_cmd_type_t;
 #+end_src
 
@@ -58,6 +59,7 @@
 | LOCK ON  | ✓     |       |      |
 | PLAY     |       | ✓     |      |
 | GPIO     |       |       | ✓    |
+| FALLEN   | ✓     |       |      |
 
 ** 数据封包
 
@@ -66,19 +68,19 @@
   #define __EGG_PACKET_H
   #include <stdint.h>
   #include "egg_payload.h"
+  #define EGG 2 /* device type */
   <<command-type>>
   <<packet>>
   uint32_t egg_packet_calculate_encode_size(struct egg_packet_t * packet);
   uint32_t egg_packet_encode(struct egg_packet_t * packet, uint8_t * buf, uint32_t size);
   uint32_t egg_packet_estimate_decode_size(uint8_t * buf, uint32_t size);
-  egg_cmd_type_t egg_packet_decode(uint8_t * buf, uint32_t size, struct egg_packet_t * packet);
+  egg_cmd_type_t egg_packet_decode(uint8_t * buf, uint32_t size, uint32_t estimated, struct egg_packet_t * packet);
   #endif
 #+end_src
 
 #+begin_src c :mkdirp yes :tangle /dev/shm/eggos/egg_packet.c
   #include "egg_packet.h"
   #include "hash.h"
-  #include "base64.h"
 
   /*
     packet layout:
@@ -116,23 +118,27 @@
             +-+-+-+-+-+-+-+-+
 
             +-+-+-+-+-+-+-+-+
-    byte 8  |0|0|0|0|0|x|x|x|   egg no
+    byte 8  |x|x|x|x|x|x|x|x|   device type
             +-+-+-+-+-+-+-+-+
 
             +-+-+-+-+-+-+-+-+
-    byte 9  |0|0|0|0|0|0|0|0|   version
+    byte 9  |0|0|0|0|0|x|x|x|   egg no
             +-+-+-+-+-+-+-+-+
 
             +-+-+-+-+-+-+-+-+
-    byte A  |x|x|x|x|x|x|x|x|   length0 of data
+    byte A  |0|0|0|0|0|0|0|0|   version
             +-+-+-+-+-+-+-+-+
 
             +-+-+-+-+-+-+-+-+
-    byte B  |x|x|x|x|x|x|x|x|   length1 of data
+    byte B  |x|x|x|x|x|x|x|x|   length0 of data
             +-+-+-+-+-+-+-+-+
 
             +-+-+-+-+-+-+-+-+
-    byte C  |x|x|x|x|x|x|x|x|   begin of data (base64)
+    byte C  |x|x|x|x|x|x|x|x|   length1 of data
+            +-+-+-+-+-+-+-+-+
+
+            +-+-+-+-+-+-+-+-+
+    byte D  |x|x|x|x|x|x|x|x|   begin of data (base64)
             +-+-+-+-+-+-+-+-+
                     .
                     .
@@ -143,81 +149,72 @@
 
   ,*/
 
-  #define EGG_PACKET_META_SIZE (4 + 4 + 1 + 1 + 2) // except data
+  #define EGG_PACKET_META_SIZE (4 + 4 + 1 + 1 + 1 + 2) // except data
 
   uint32_t egg_packet_calculate_encode_size(struct egg_packet_t * packet) {
-    return base64_encode_length(egg_payload_calculate_size(&packet->payload)) + EGG_PACKET_META_SIZE;
+    return egg_payload_calculate_size(&packet->payload) + EGG_PACKET_META_SIZE;
   }
 
   uint32_t egg_packet_encode(struct egg_packet_t * packet, uint8_t * buf, uint32_t size) {
-    uint32_t payload_size = egg_payload_calculate_size(&packet->payload);
-    uint8_t zbuf[payload_size];
-    int zsize = egg_payload_encode_zeropack(&packet->payload, zbuf, payload_size);
+    int realsize = egg_payload_encode_zeropack(&packet->payload, buf + EGG_PACKET_META_SIZE, size - EGG_PACKET_META_SIZE);
 
-    uint32_t base64_len = base64_encode(zbuf, zsize, buf + EGG_PACKET_META_SIZE, size - EGG_PACKET_META_SIZE);
-    if (base64_len == 0) return 0;
-    buf[0] = 0x33;
-    buf[1] = 0x3C;
-    buf[2] = 0xC3;
-    buf[3] = 0xCC;
-    buf[8] = packet->egg;
-    buf[9] = packet->version;
-    buf[10] = base64_len & 0xFF;
-    buf[11] = (base64_len >> 8) & 0xFF;
-    uint32_t checksum = adler32(buf + 8, base64_len + 4 /* egg + version + data length */);
+    if (realsize == 0) return 0;
+    buf[0] = 0xCC;
+    buf[1] = 0xC3;
+    buf[2] = 0x3C;
+    buf[3] = 0x33;
+    buf[8] = EGG;
+    buf[9] = packet->egg;
+    buf[10] = packet->version;
+    buf[11] = realsize & 0xFF;
+    buf[12] = (realsize >> 8) & 0xFF;
+    uint32_t checksum = adler32(buf + 8, realsize + 5 /* type + egg + version + data length */);
     buf[4] = checksum & 0xFF;
     buf[5] = (checksum >> 8) & 0xFF;
     buf[6] = (checksum >> 16) & 0xFF;
     buf[7] = (checksum >> 24) & 0xFF;
-    return EGG_PACKET_META_SIZE + base64_len;
+    return EGG_PACKET_META_SIZE + realsize;
   }
 
   uint32_t egg_packet_estimate_decode_size(uint8_t * buf, uint32_t size) {
     if (size <= EGG_PACKET_META_SIZE) return 0;
-    if (buf[0] != 0x33 ||
-        buf[1] != 0x3C ||
-        buf[2] != 0xC3 ||
-        buf[3] != 0xCC) {
+    if (buf[0] != 0xCC ||
+        buf[1] != 0xC3 ||
+        buf[2] != 0x3C ||
+        buf[3] != 0x33 ||
+        buf[8] != EGG) {
       return 0;
     }
-    uint32_t len = (buf[10] + (buf[11] << 8)) & 0xFFFF;
-    uint32_t checksum = adler32(buf + 8, len + 4);
+    uint32_t len = (buf[11] + (buf[12] << 8)) & 0xFFFF;
+    uint32_t checksum = adler32(buf + 8, len + 5);
     if ((buf[4] == (checksum & 0xFF)) &&
         (buf[5] == ((checksum >> 8) & 0xFF)) &&
         (buf[6] == ((checksum >> 16) & 0xFF)) &&
         (buf[7] == ((checksum >> 24) & 0xFF))) {
-      uint32_t zlen = base64_decode_length(buf + EGG_PACKET_META_SIZE, len);
-      if (zlen == 0) return 0;
-      uint8_t zbuf[zlen];
-      base64_decode(buf + EGG_PACKET_META_SIZE, len, zbuf, zlen);
-      return egg_payload_estimate_zeropack_size(zbuf, zlen) + EGG_PACKET_META_SIZE;
+      return egg_payload_estimate_zeropack_size(buf + EGG_PACKET_META_SIZE, len) + EGG_PACKET_META_SIZE;
     }
     return 0;
   }
 
-  egg_cmd_type_t egg_packet_decode(uint8_t * buf, uint32_t size, struct egg_packet_t * packet) {
+  egg_cmd_type_t egg_packet_decode(uint8_t * buf, uint32_t size, uint32_t estimated, struct egg_packet_t * packet) {
     if (size < EGG_PACKET_META_SIZE) return 0;
-    if (buf[0] != 0x33 ||
-        buf[1] != 0x3C ||
-        buf[2] != 0xC3 ||
-        buf[3] != 0xCC) {
+    if (buf[0] != 0xCC ||
+        buf[1] != 0xC3 ||
+        buf[2] != 0x3C ||
+        buf[3] != 0x33 ||
+        buf[8] != EGG) {
       return 0;
     }
-    uint32_t len = (buf[10] + (buf[11] << 8)) & 0xFFFF;
-    uint32_t checksum = adler32(buf + 8, len + 4);
+    uint32_t len = (buf[11] + (buf[12] << 8)) & 0xFFFF;
+    uint32_t checksum = adler32(buf + 8, len + 5);
     if ((buf[4] == (checksum & 0xFF)) &&
         (buf[5] == ((checksum >> 8) & 0xFF)) &&
         (buf[6] == ((checksum >> 16) & 0xFF)) &&
         (buf[7] == ((checksum >> 24) & 0xFF))) {
-      uint32_t zlen = base64_decode_length(buf + EGG_PACKET_META_SIZE - 1, len);
-      if (zlen == 0) return 0;
-      uint8_t zbuf[zlen];
-      zlen = base64_decode(buf + EGG_PACKET_META_SIZE, len, zbuf, zlen);
-      uint32_t dlen = egg_payload_estimate_zeropack_size(zbuf, zlen);
-      uint8_t dbuf[dlen];
-      egg_payload_decode_zeropack(zbuf, zlen, dbuf, &packet->payload);
-      packet->version = buf[9];
-      packet->egg = buf[8];
+      uint8_t dbuf[estimated];
+      egg_payload_decode_zeropack(buf + EGG_PACKET_META_SIZE, size, dbuf, &packet->payload);
+      packet->egg = buf[9];
+      packet->version = buf[10];
       return packet->payload.cmd;
     }
     return 0;
