@@ -24,11 +24,13 @@
   #include "infrared.h"
   #include "speaker.h"
   #include "gpio.h"
+  #include "led.h"
   #include "stack.h"
 
   #define EGG_STACK_BUFFER_BITSIZE  4
 
   volatile uint32_t systick = 0;
+  uint16_t locking_off_cabins = 0;
   uint32_t slot = 0;
   uint32_t egg_states[16] = {EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE, EGG_LOCKING_ON_STATE};
   uint32_t locking_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -48,6 +50,7 @@
     <<setup-infrared>>
     <<setup-speaker>>
     <<setup-gpio>>
+    <<setup-led>>
   }
 
   <<egg-fsm-action>>
@@ -123,6 +126,10 @@ REPL通讯挂在串口1上。
 #+begin_src c :noweb-ref setup-gpio
   gpio_setup();
 #+end_src
+*** LED
+#+begin_src c :noweb-ref setup-led
+  led_setup();
+#+end_src
 ** 主循环
 在初始化完成后，系统进入主循环，根据当前的状态和发生的事件，推动状态机
 运行。
@@ -147,6 +154,11 @@ REPL通讯挂在串口1上。
           egg_states[i] = egg_transform_state(egg_states[i], EGG_3_MINUTES_TIMEOUT_EVENT, &i);
         }
       }
+    }
+    if (locking_off_cabins == 0) {
+      led_off();
+    } else {
+      led_on();
     }
   }
 #+end_src
@@ -779,6 +791,7 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/rcc.h>
   #include <libopencm3/stm32/gpio.h>
   #include "lock.h"
+  #include "defination.h"
 
   static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
   static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
@@ -795,10 +808,12 @@ egg-proto-fsm.xlsx 文件。
 
   void lock_off(uint8_t cabin) {
     gpio_set(ports[cabin], ios[cabin]);
+    locking_off_cabins |= 1 << cabin;
   }
 
   void lock_on(uint8_t cabin) {
     gpio_clear(ports[cabin], ios[cabin]);
+    locking_off_cabins &= ~(1 << cabin);
   }
 #+end_src
 ** 红外检测
@@ -1113,6 +1128,39 @@ egg-proto-fsm.xlsx 文件。
         gpio_clear(ports[i], ios[i]);
       }
     }
+  }
+#+end_src
+** LED
+#+begin_src c :tangle /dev/shm/eggos/led.h
+  #ifndef __LED_H
+  #define __LED_H
+
+  void led_setup(void);
+  void led_on(void);
+  void led_off(void);
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/led.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "led.h"
+
+  #define LED_RCC             RCC_GPIOF
+  #define LED_PORT            GPIOF
+  #define LED_IO              GPIO5
+
+  void led_setup() {
+    rcc_periph_clock_enable(LED_RCC);
+    gpio_mode_setup(LED_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED_IO);
+    led_off();
+  }
+
+  void led_on() {
+    gpio_clear(LED_PORT, LED_IO);
+  }
+
+  void led_off() {
+    gpio_set(LED_PORT, LED_IO);
   }
 #+end_src
 * REPL代码
@@ -2032,7 +2080,7 @@ uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, c
     }
   }
 #+end_src
-** 宏定义
+** 宏定义与全局变量
 #+begin_src c :tangle /dev/shm/eggos/defination.h
   #ifndef __DEFINATION_H
   #define __DEFINATION_H
@@ -2044,6 +2092,14 @@ uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, c
   extern uint32_t slot;
   extern uint32_t egg_states[16];
   extern uint32_t locking_timers[16];
+  extern uint16_t locking_off_cabins;
 
   #endif
 #+end_src
+| name               | meaning               |
+|--------------------+-----------------------|
+| systick            | 系统时钟              |
+| slot               | 上位机通讯窗口        |
+| egg_states         | 蛋机核心状态          |
+| locking_timers     | 解锁计时器            |
+| locking_off_cabins | 开锁标志，驱动 LED 用 |
