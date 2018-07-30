@@ -459,6 +459,11 @@ egg-proto-fsm.xlsx 文件。
       ackpacket.payload.ack_type = EGG_GPIO;
       ackpacket.payload.gpio = packet->payload.gpio;
       break;
+    case EGG_VOLUME:
+      speaker_volume(packet->payload.volume);
+      ackpacket.payload.ack_type = EGG_VOLUME;
+      ackpacket.payload.volume = packet->payload.volume;
+      break;
     default:
       break;
     }
@@ -475,15 +480,16 @@ egg-proto-fsm.xlsx 文件。
       size_of_len = 4;
     }
     if (ring_available(&epigyny_tx) >= acklen + size_of_len) {
-      uint8_t ackbuf[acklen];
-      bzero(ackbuf, acklen);
-      uint32_t reallen = egg_packet_encode(&ackpacket, ackbuf, acklen);
+      uint8_t ackbuf[acklen + size_of_len];
+      bzero(ackbuf, acklen + size_of_len);
+      uint32_t reallen = egg_packet_encode(&ackpacket, ackbuf + size_of_len, acklen);
       acklen = reallen;
+      uint8_t ptr = 0;
       while (acklen > 0) {
-        ring_write(&epigyny_tx, acklen & 0x7F);
+        ackbuf[ptr ++] = acklen & 0x7F;
         acklen = acklen >> 7;
       }
-      ring_write_array(&epigyny_tx, ackbuf, 0, reallen);
+      ring_write_array(&epigyny_tx, ackbuf, 0, reallen + size_of_len);
     }
 
   }
@@ -513,15 +519,16 @@ egg-proto-fsm.xlsx 文件。
       size_of_len = 4;
     }
     if (ring_available(&epigyny_tx) >= len + size_of_len) {
-      uint8_t buf[len];
-      bzero(buf, len);
-      uint32_t reallen = egg_packet_encode(&packet, buf, len);
+      uint8_t buf[len + size_of_len];
+      bzero(buf, len + size_of_len);
+      uint32_t reallen = egg_packet_encode(&packet, buf + size_of_len, len);
       len = reallen;
+      uint8_t ptr = 0;
       while (len > 0) {
-        ring_write(&epigyny_tx, len & 0x7F);
+        buf[ptr ++] = len & 0x7F;
         len = len >> 7;
       }
-      ring_write_array(&epigyny_tx, buf, 0, reallen);
+      ring_write_array(&epigyny_tx, buf, 0, reallen + size_of_len);
     }
   }
 #+end_src
@@ -1117,15 +1124,16 @@ egg-proto-fsm.xlsx 文件。
     rcc_periph_clock_enable(RCC_GPIOC);
     for (uint8_t i = 0; i < 4; i ++) {
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+      gpio_set(ports[i], ios[i]);
     }
   }
 
   void gpio_exclamation_mark(uint8_t gpio) {
     for (uint8_t i = 0; i < 4; i ++) {
       if ((gpio & (1 << i)) != 0) {
-        gpio_set(ports[i], ios[i]);
-      } else {
         gpio_clear(ports[i], ios[i]);
+      } else {
+        gpio_set(ports[i], ios[i]);
       }
     }
   }
