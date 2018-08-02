@@ -51,6 +51,8 @@
     <<setup-speaker>>
     <<setup-gpio>>
     <<setup-led>>
+    iwdg_set_period_ms(2000);
+    iwdg_start();
   }
 
   <<egg-fsm-action>>
@@ -61,6 +63,7 @@
 
     while (1) {
       // main loop
+      iwdg_reset();
       infrared_eventloop();
       uart_eventloop();
       speaker_eventloop();
@@ -399,7 +402,6 @@ egg-proto-fsm.xlsx 文件。
 
 协议上的 cabin 是从 1 开始计数的，在使用时，必须先变成从 0 开始计数的。
 #+begin_src c :noweb-ref proto-callback
-  #include "repl.h"
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
 
     if (buf[8] == 0xFF) {
@@ -799,6 +801,7 @@ egg-proto-fsm.xlsx 文件。
   #include <libopencm3/stm32/gpio.h>
   #include "lock.h"
   #include "defination.h"
+  #include "repl.h"
 
   static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
   static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
@@ -809,6 +812,7 @@ egg-proto-fsm.xlsx 文件。
     rcc_periph_clock_enable(RCC_GPIOC);
     for (uint8_t i = 0; i < 16; i ++) {
       gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+      gpio_set_output_options(ports[i], GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, ios[i]);
       gpio_clear(ports[i], ios[i]);
     }
   }
@@ -816,11 +820,23 @@ egg-proto-fsm.xlsx 文件。
   void lock_off(uint8_t cabin) {
     gpio_set(ports[cabin], ios[cabin]);
     locking_off_cabins |= 1 << cabin;
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" lock-off ");
+      output_uint32(cabin + 1);
+      output_newline();
+    }
   }
 
   void lock_on(uint8_t cabin) {
     gpio_clear(ports[cabin], ios[cabin]);
     locking_off_cabins &= ~(1 << cabin);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" lock-on ");
+      output_uint32(cabin + 1);
+      output_newline();
+    }
   }
 #+end_src
 ** 红外检测
@@ -937,7 +953,8 @@ egg-proto-fsm.xlsx 文件。
       egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_INFRARED_TRIGGERED_EVENT, &cabin);
       aftercase_timers[cabin] = systick;
       if (debug == 1) {
-        output_string("Infrared ");
+        output_uint32(systick);
+        output_string(" Infrared ");
         output_uint32(cabin + 1);
         output_string(" triggered\r\n");
       }
@@ -1181,6 +1198,7 @@ REPL系统挂接到串口 1 上，允许通过命令对系统进行操作，比�
 
   #include "uart.h"
   #include "ring.h"
+  #include "utility.h"
 
   #define _output_string_1(str, line) do {                                \
     uint32_t len##line = 0;                                               \
