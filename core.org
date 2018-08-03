@@ -137,12 +137,16 @@ REPL通讯挂在串口1上。
 在初始化完成后，系统进入主循环，根据当前的状态和发生的事件，推动状态机
 运行。
 #+begin_src c :noweb-ref main-loop
-  if (UINT32_DIFF_GREATER_THAN(systick, loop_timer, 999)) {
+  if (UINT32_DIFF_GREATER_THAN(systick, loop_timer, 299)) {
     loop_timer = systick;
     for (uint8_t i = 0; i < 16; i ++) {
       if (egg_states[i] == EGG_DELAYING_STATE) {
         if (UINT32_DIFF_GREATER_THAN(systick, delaying_timers[i], 199)) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_DELAY_TIMEOUT_EVENT, &i);
+        }
+      } else if (egg_states[i] == EGG_LOCKING_OFF_30S_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 29999)) {
+          egg_states[i] = egg_transform_state(egg_states[i], EGG_30_SECONDS_TIMEOUT_EVENT, &i);
         }
       } else if (egg_states[i] == EGG_LOCKING_OFF_1M_STATE) {
         if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
@@ -158,11 +162,20 @@ REPL通讯挂在串口1上。
         }
       }
     }
+
+    if (((loop_timer / 1000) & 1) == 0) {
+      led_off();
+    } else {
+      led_on();
+    }
+
+    /*
     if (locking_off_cabins == 0) {
       led_off();
     } else {
       led_on();
     }
+    ,*/
   }
 #+end_src
 
@@ -174,14 +187,16 @@ REPL通讯挂在串口1上。
 2. 延迟 200 MS 开始检查落蛋事件，这样是为了绕开因开锁的干扰导致检测到
    的落蛋事件。
 
-3. 若 1 分钟内未检测到落蛋事件，播放提示语音。
+3. 若 30 分钟内未检测到落蛋事件，播放提示语音。
 
-4. 若 2 分钟内未检测到落蛋事件，播放提示语音。
+4. 若 1 分钟内未检测到落蛋事件，播放提示语音。
 
-5. 若 3 分钟内未检测到落蛋事件，播放提示语音并关锁。
+5. 若 2 分钟内未检测到落蛋事件，播放提示语音。
 
-6. 在开锁后（含延迟 200 MS）三分钟内的任意时刻，检测到落蛋事件，播放提
-   示语音并关锁。
+6. 若 3 分钟内未检测到落蛋事件，播放提示语音，关锁并上报超时事件。
+
+7. 在开锁后（含延迟 200 MS）三分钟内的任意时刻，检测到落蛋事件，播放提
+   示语音，关锁并上报落蛋事件。
 
 核心状态机的定义见 egg-fsm.xlsx 文件。
 #+begin_src c :noweb-ref egg-fsm-action
@@ -202,15 +217,19 @@ REPL通讯挂在串口1上。
       epigyny_fallen(cabin);
       speaker_play(2);
       break;
-    case EGG_PLAY_3M_NEWLINE_LOCK_ON_ACTION:
-      lock_on(cabin);
-      speaker_play(5);
-      break;
-    case EGG_PLAY_1M_ACTION:
+    case EGG_PLAY_30S_ACTION:
       speaker_play(3);
       break;
-    case EGG_PLAY_2M_ACTION:
+    case EGG_PLAY_3M_NEWLINE_LOCK_ON_NEWLINE_TIMEOUT_ACTION:
+      lock_on(cabin);
+      epigyny_timeout(cabin);
+      speaker_play(6);
+      break;
+    case EGG_PLAY_1M_ACTION:
       speaker_play(4);
+      break;
+    case EGG_PLAY_2M_ACTION:
+      speaker_play(5);
       break;
     }
   }
@@ -228,6 +247,7 @@ REPL通讯挂在串口1上。
   void epigyny_setup(struct uart_context_t * ctx);
   void epigyny_eventloop(struct uart_context_t * ctx);
   <<fallen-prototype>>
+  <<upload-timeout-prototype>>
   #endif
 #+end_src
 #+begin_src c :noweb yes :mkdirp yes :tangle /dev/shm/eggos/epigyny.c
@@ -264,6 +284,7 @@ REPL通讯挂在串口1上。
   <<proto-callback>>
   <<egg-proto-fsm-action>>
   <<fallen>>
+  <<upload-timeout>>
 #+end_src
 ** 配置
 #+begin_src c :noweb-ref epigyny-setup
@@ -466,6 +487,15 @@ egg-proto-fsm.xlsx 文件。
       ackpacket.payload.ack_type = EGG_VOLUME;
       ackpacket.payload.volume = packet->payload.volume;
       break;
+    case EGG_QUERY:{
+      uint8_t cabin = packet->payload.cabin - 1;
+      if (cabin < 16) {
+        ackpacket.payload.ack_type = EGG_QUERY;
+        ackpacket.payload.busy = (egg_states[cabin] != EGG_LOCKING_ON_STATE)? 1: 0;
+        ackpacket.payload.cabin = packet->payload.cabin;
+      }
+      break;
+    }
     default:
       break;
     }
@@ -508,6 +538,43 @@ egg-proto-fsm.xlsx 文件。
     bzero(&packet, sizeof(struct egg_packet_t));
     packet.egg = EGGID;
     packet.payload.cmd = EGG_FALLEN;
+    packet.payload.cabin = cabin + 1;
+    uint32_t len = egg_packet_calculate_encode_size(&packet);
+    uint8_t size_of_len = 0;
+    if (len < 128) {
+      size_of_len = 1;
+    } else if (len < 16384) {
+      size_of_len = 2;
+    } else if (len < 2097152) {
+      size_of_len = 3;
+    } else {
+      size_of_len = 4;
+    }
+    if (ring_available(&epigyny_tx) >= len + size_of_len) {
+      uint8_t buf[len + size_of_len];
+      bzero(buf, len + size_of_len);
+      uint32_t reallen = egg_packet_encode(&packet, buf + size_of_len, len);
+      len = reallen;
+      uint8_t ptr = 0;
+      while (len > 0) {
+        buf[ptr ++] = len & 0x7F;
+        len = len >> 7;
+      }
+      ring_write_array(&epigyny_tx, buf, 0, reallen + size_of_len);
+    }
+  }
+#+end_src
+** 超时上报
+#+begin_src c :noweb-ref upload-timeout-prototype
+  void epigyny_timeout(uint8_t cabin);
+#+end_src
+
+#+begin_src c :noweb-ref upload-timeout
+  void epigyny_timeout(uint8_t cabin) {
+    struct egg_packet_t packet;
+    bzero(&packet, sizeof(struct egg_packet_t));
+    packet.egg = EGGID;
+    packet.payload.cmd = EGG_TIMEOUT;
     packet.payload.cabin = cabin + 1;
     uint32_t len = egg_packet_calculate_encode_size(&packet);
     uint8_t size_of_len = 0;
@@ -1022,6 +1089,7 @@ egg-proto-fsm.xlsx 文件。
   #include "defination.h"
   #include "utility.h"
   #include "ring.h"
+  #include "repl.h"
 
   #define SPEAKER_TIM_RCC     RCC_TIM2
   #define SPEAKER_GPIO_RCC    RCC_GPIOA
@@ -1081,6 +1149,12 @@ egg-proto-fsm.xlsx 文件。
     cmd[4] = (idx >> 0) & 0xFF;
     cmd[5] = cmd[1] ^ cmd[2] ^ cmd[3] ^ cmd[4];
     ring_write_array(&speaker_tx, cmd, 0, 7);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" play ");
+      output_uint32(idx);
+      output_newline();
+    }
   }
 
   void speaker_volume(uint8_t vol) {
@@ -1088,6 +1162,12 @@ egg-proto-fsm.xlsx 文件。
     cmd[3] = vol;
     cmd[4] = cmd[1] ^ cmd[2] ^ cmd[3];
     ring_write_array(&speaker_tx, cmd, 0, 6);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" volume ");
+      output_uint32(vol);
+      output_newline();
+    }
   }
 
   void speaker_eventloop(void) {

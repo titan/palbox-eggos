@@ -11,6 +11,9 @@
  | 28 | PLAY     | 播放语音  |
  | 29 | GPIO     | 设置 GPIO |
  | 30 | FALLEN   | 掉落通知  |
+ | 31 | VOLUME   | 设置音量  |
+ | 32 | TIMEOUT  | 超时通知  |
+ | 33 | QUERY    | 查询状态  |
 
 #+begin_src c :noweb-ref command-type
   typedef enum EGG_CMD_TYPE {
@@ -22,6 +25,8 @@
     EGG_GPIO = 0x1D,
     EGG_FALLEN = 0x1E,
     EGG_VOLUME = 0x1F,
+    EGG_TIMEOUT = 0x20,
+    EGG_QUERY = 0x21,
   } egg_cmd_type_t;
 #+end_src
 
@@ -50,6 +55,7 @@
     (int 5 audio)
     (byte 6 gpio)
     (byte 7 volume)
+    (byte 8 busy)
     )
 #+end_src
 
@@ -63,6 +69,8 @@
 | GPIO     |       |       | ✓    |        |
 | FALLEN   | ✓     |       |      |        |
 | VOLUME   |       |       |      | ✓      |
+| TIMEOUT  | ✓     |       |      |        |
+| QUERY    | ✓     |       |      |        |
 
 ** 数据封包
 
