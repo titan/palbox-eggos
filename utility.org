@@ -1,0 +1,413 @@
+#+STARTUP: indent
+
+* 辅助代码
+** base64
+
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/base64.h
+#ifndef _BASE64_H
+#define _BASE64_H
+#include <stdint.h>
+uint32_t base64_encode_length(uint32_t len);
+uint32_t base64_encode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_len);
+
+uint32_t base64_decode_length(const uint8_t * buf, uint32_t len);
+uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, const uint32_t dstlen);
+#endif
+
+#+end_src
+
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/base64.c
+  #include <stdint.h>
+  #include "base64.h"
+
+  static const uint8_t base64_table[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  uint32_t base64_encode_length(uint32_t len) {
+    uint32_t olen = len * 4 / 3 + 4; /* 3-byte blocks to 4-byte */
+    return olen;
+  }
+
+  uint32_t base64_encode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_len) {
+    uint8_t *pos;
+    const uint8_t *end;
+
+    if (dst_len < len)
+      return 0; /* integer overflow */
+
+    end = src + len;
+    pos = dst;
+    while (end - src >= 3) {
+      (*pos++) = base64_table[src[0] >> 2];
+      (*pos++) = base64_table[((src[0] & 0x03) << 4) | (src[1] >> 4)];
+      (*pos++) = base64_table[((src[1] & 0x0f) << 2) | (src[2] >> 6)];
+      (*pos++) = base64_table[src[2] & 0x3f];
+      src += 3;
+    }
+
+    if (end - src) {
+      (*pos++) = base64_table[src[0] >> 2];
+      if (end - src == 1) {
+        (*pos++) = base64_table[(src[0] & 0x03) << 4];
+        (*pos++) = '=';
+      } else {
+        (*pos++) = base64_table[((src[0] & 0x03) << 4) | (src[1] >> 4)];
+        (*pos++) = base64_table[(src[1] & 0x0f) << 2];
+      }
+      (*pos++) = '=';
+    }
+
+    return pos - dst;
+  }
+
+  static const int b64index[256] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 62, 63, 62, 62, 63, 52, 53, 54, 55,
+    56, 57, 58, 59, 60, 61,  0,  0,  0,  0,  0,  0,  0,  0,  1,  2,  3,  4,  5,  6,
+    7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,  0,
+    0,  0,  0, 63,  0, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+  };
+
+  uint32_t base64_decode_length(const uint8_t * buf, uint32_t len) {
+    int pad = len > 0 && (len % 4 || buf[len - 1] == '=');
+    uint32_t L = ((len + 3) / 4 - pad) * 4;
+    uint32_t size = L / 4 * 3 + pad;
+    if (len > L + 2 && buf[L + 2] != '=') size ++;
+    return size;
+  }
+
+  uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, const uint32_t dstlen) {
+    uint32_t ptr = 0;
+    int pad = len > 0 && (len % 4 || src[len - 1] == '=');
+    const uint32_t L = (dstlen - pad) / 3 * 4;
+
+    for (uint32_t i = 0; i < L; i += 4) {
+      int n = b64index[src[i]] << 18 | b64index[src[i + 1]] << 12 | b64index[src[i + 2]] << 6 | b64index[src[i + 3]];
+      dst[ptr++] = n >> 16;
+      dst[ptr++] = n >> 8 & 0xFF;
+      dst[ptr++] = n & 0xFF;
+    }
+    if (pad) {
+      int n = b64index[src[L]] << 18 | b64index[src[L + 1]] << 12;
+      dst[ptr++] = n >> 16;
+
+      if (len > L + 2 && src[L + 2] != '=') {
+        n |= b64index[src[L + 2]] << 6;
+        dst[ptr++] = n >> 8 & 0xFF;
+      }
+    }
+    return ptr;
+  }
+#+end_src
+** hash
+
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/hash.h
+  #ifndef __HASH_H
+  #define __HASH_H
+  #include <stdint.h>
+
+  uint8_t crc8(uint8_t * buf, uint32_t size);
+  uint32_t adler32(uint8_t * buf, uint32_t size);
+  #endif
+#+end_src
+
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/hash.c
+  #include "hash.h"
+
+  #define CRC8_KEY 0x07
+
+  uint8_t crc8(uint8_t * buf, uint32_t size) {
+    uint8_t crc = 0;
+    while (size-- != 0) {
+      for (uint8_t i = 0x80; i != 0; i /= 2) {
+        if ((crc & 0x80) != 0) {
+          crc = crc << 1;
+          crc ^= CRC8_KEY;
+        } else {
+          crc = crc << 1;
+        }
+        if (( * buf & i) != 0) {
+          crc ^= CRC8_KEY;
+        }
+      }
+      buf ++;
+    }
+    return crc;
+  }
+
+  uint32_t adler32(uint8_t * buf, uint32_t size) {
+    uint32_t a = 1, b = 0;
+    for (uint8_t i = 0; i < size; i ++) {
+      uint8_t d = buf[i];
+      a = (a + d) % 66521;
+      b = (a + b) % 66521;
+    }
+    return (b << 16) | a;
+  }
+#+end_src
+** ring
+#+begin_src c :tangle /dev/shm/eggos/ring.h
+  #ifndef __RING_H
+  #define __RING_H
+  #include <stdint.h>
+  struct ring_t {
+    uint8_t * data;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t mask;
+  };
+
+  #define ring_length(r) ((r)->tail - (r)->head)
+
+  #define ring_is_empty(r) ((r)->head == (r)->tail)
+
+  #define ring_empty(r) do {  \
+      (r)->head = 0;          \
+      (r)->tail = 0;          \
+    } while(0)
+
+  #define ring_available(r) ((r)->mask + 1 - ring_length(r))
+
+  void ring_init(struct ring_t * ring, uint8_t * data, uint32_t bitsize);
+  uint32_t ring_write(struct ring_t * ring, uint8_t data);
+  uint32_t ring_write_array(struct ring_t * ring, uint8_t * data, uint32_t offset, uint32_t size);
+  uint32_t ring_read(struct ring_t * ring, uint8_t * data);
+  uint32_t ring_read_array(struct ring_t * ring, uint8_t * data, uint32_t offset, uint32_t size);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/ring.c
+  #include "ring.h"
+
+  void ring_init(struct ring_t * ring, uint8_t * data, uint32_t bitsize) {
+    ring->data = data;
+    ring->head = 0;
+    ring->tail = 0;
+    ring->mask = (2 << (bitsize - 1)) - 1;
+  }
+
+  uint32_t ring_write(struct ring_t * ring, uint8_t data) {
+    if (ring_available(ring) == 0) {
+      return 0;
+    }
+    ring->data[ring->tail & ring->mask] = data;
+    ring->tail += 1;
+    return 1;
+  }
+
+  uint32_t ring_write_array(struct ring_t * ring, uint8_t * data, uint32_t offset, uint32_t size) {
+    uint32_t cnt = 0;
+    while (ring_available(ring) > 0 && cnt < size) {
+      ring->data[ring->tail & ring->mask] = data[offset + cnt];
+      ring->tail += 1;
+      cnt ++;
+    }
+    return cnt;
+  }
+
+  uint32_t ring_read(struct ring_t * ring, uint8_t * data) {
+    if (ring_is_empty(ring)) {
+      return 0;
+    }
+
+    (* data) = ring->data[ring->head & ring->mask];
+    ring->head += 1;
+    return 1;
+  }
+
+  uint32_t ring_read_array(struct ring_t * ring, uint8_t * data, uint32_t offset, uint32_t size) {
+    uint32_t cnt = 0;
+    while (!ring_is_empty(ring) && cnt < size) {
+      data[offset + cnt] = ring->data[ring->head & ring->mask];
+      ring->head += 1;
+      cnt ++;
+    }
+    return cnt;
+  }
+#+end_src
+** stack
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/stack.h
+  #ifndef _STACK_H
+  #define _STACK_H
+  #include <stdint.h>
+
+  struct stack_t {
+    uint8_t * buffer;
+    int top;
+    uint32_t capacity;
+  };
+
+  void stack_init(struct stack_t * stack, uint8_t * buffer, uint32_t capacity);
+  uint32_t stack_push(struct stack_t * stack, uint8_t e);
+  uint32_t stack_pop(struct stack_t * stack);
+  uint32_t stack_top(struct stack_t * stack, uint8_t * e);
+  uint32_t stack_isempty(struct stack_t * stack);
+  void stack_clear(struct stack_t * stack);
+  #endif
+#+end_src
+#+begin_src c :mkdirp yes :tangle /dev/shm/eggos/stack.c
+  #include "stack.h"
+
+  void stack_init(struct stack_t * stack, uint8_t * buffer, uint32_t capacity) {
+    stack->buffer = buffer;
+    stack->capacity = capacity;
+    stack->top = -1;
+  }
+
+  uint32_t stack_push(struct stack_t * stack, uint8_t e) {
+    if (stack->top < (int) stack->capacity) {
+      stack->top ++ ;
+      stack->buffer[stack->top] = e;
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  uint32_t stack_pop(struct stack_t * stack) {
+    if (stack->top != -1) {
+      stack->top --;
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  uint32_t stack_top(struct stack_t * stack, uint8_t * e) {
+    if (stack->top != -1) {
+      (* e) = stack->buffer[stack->top];
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  uint32_t stack_isempty(struct stack_t * stack) {
+    return stack->top == -1;
+  }
+
+  void stack_clear(struct stack_t * stack) {
+    stack->top = -1;
+  }
+#+end_src
+** utility
+#+begin_src c :tangle /dev/shm/eggos/utility.h
+  #ifndef __UTILITY_H
+  #define __UTILITY_H
+  #include <stdint.h>
+
+  void delay(uint32_t ms);
+  uint8_t uint_to_string(uint32_t num, char buf[10]);
+  uint8_t ulong_to_string(uint64_t num, char buf[20]);
+  uint32_t string_to_uint(char * buf, uint32_t size);
+  void bzero(void * base, uint32_t size);
+  #endif
+
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/utility.c
+  #include "utility.h"
+
+  void delay(uint32_t ms) {
+    ms *= 960; // 3360=168MHz, 1440=72MHz
+    while (ms--) {
+      __asm ("nop");
+    }
+  }
+
+  uint8_t uint_to_string(uint32_t num, char buf[10]) {
+    for (int i = 0; i < 10; i ++) {
+      buf[i] = 0;
+    }
+    if (num == 0) {
+      buf[0] = '0';
+      return 1;
+    }
+
+    uint8_t ptr = 0;
+    while (num != 0) {
+      buf[ptr ++] = (num % 10) + 0x30;
+      num /= 10;
+    }
+    for (uint32_t i = 0, len = ptr / 2; i < len; i ++) {
+      char tmp = buf[i];
+      buf[i] = buf[ptr - i - 1];
+      buf[ptr - i - 1] = tmp;
+    }
+    return ptr;
+  }
+
+  uint8_t ulong_to_string(uint64_t num, char buf[20]) {
+    for (int i = 0; i < 20; i ++) {
+      buf[i] = 0;
+    }
+    if (num == 0) {
+      buf[0] = '0';
+      return 1;
+    }
+
+    uint8_t ptr = 0;
+    while (num != 0) {
+      buf[ptr ++] = (num % 10) + 0x30;
+      num /= 10;
+    }
+    for (uint32_t i = 0, len = ptr / 2; i < len; i ++) {
+      char tmp = buf[i];
+      buf[i] = buf[ptr - i - 1];
+      buf[ptr - i - 1] = tmp;
+    }
+    return ptr;
+  }
+
+  uint32_t string_to_uint(char * buf, uint32_t size) {
+    uint32_t num = 0;
+    for (uint32_t i = 0; i < size; i ++) {
+      num *= 10;
+      switch (buf[i]) {
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7':
+      case '8':
+      case '9':
+        num += buf[i] - 0x30;
+      }
+    }
+    return num;
+  }
+
+  void bzero(void * base, uint32_t size) {
+    uint32_t end = (uint32_t)base + size;
+    while ((uint32_t)base != end) {
+      (* (uint8_t *) base) = 0;
+      base ++;
+    }
+  }
+#+end_src
+** 宏定义与全局变量
+#+begin_src c :tangle /dev/shm/eggos/defination.h
+  #ifndef __DEFINATION_H
+  #define __DEFINATION_H
+
+  #define UINT32_DIFF_LESS_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) < (delta))) || (((a) > (b)) && ((a) - (b) < (delta))))
+  #define UINT32_DIFF_GREATER_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) > (delta))) || (((a) > (b)) && ((a) - (b) > (delta))))
+
+  extern volatile uint32_t systick;
+  extern uint32_t slot;
+  extern uint32_t egg_states[16];
+  extern uint32_t locking_timers[16];
+  extern uint16_t locking_off_cabins;
+
+  #endif
+#+end_src
+| name               | meaning               |
+|--------------------+-----------------------|
+| systick            | 系统时钟              |
+| slot               | 上位机通讯窗口        |
+| egg_states         | 蛋机核心状态          |
+| locking_timers     | 解锁计时器            |
+| locking_off_cabins | 开锁标志，驱动 LED 用 |

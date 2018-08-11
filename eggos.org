@@ -1,0 +1,7 @@
+#+TITLE: The core application for egg machine based on STM32F030
+#+AUTHOR: Titan
+#+EMAIL: howay.tan@fengchaohuzhu.com
+#+DATE: <2018-07-11 Wed>
+#+KEYWORDS: stm32, cortex m0, egg machine
+#+OPTIONS: H:4 toc:t
+#+STARTUP: indent

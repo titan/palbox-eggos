@@ -13,6 +13,10 @@ BIN8 = /dev/shm/$(NAME)-8.bin
 BUILDSRC:=$(BUILDDIR)/Makefile
 CORESRC:=$(BUILDDIR)/eggos.c
 COREFSMSRC:=$(BUILDDIR)/egg-fsm.c
+EPIGYNYSRC:=$(BUILDDIR)/epigyny.c
+DRIVERSRC:=$(BUILDDIR)/lock.c
+REPLSRC:=$(BUILDDIR)/repl.c
+UTILSRC:=$(BUILDDIR)/hash.c
 PROTOFSMSRC:=$(BUILDDIR)/egg-proto-fsm.c
 PROTOSRC:=$(BUILDDIR)/tightrope.h
 REPLFSMSRC:=$(BUILDDIR)/egg-repl-fsm.c
@@ -26,11 +30,23 @@ include .config
 
 all: $(TARGET)
 
-$(TARGET): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(TARGET): $(BUILDSRC) $(CORESRC) $(EPIGYNYSRC) $(DRIVERSRC) $(REPLSRC) $(UTILSRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
 	@sed '1s/\$$/1/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make; cd -
 
 $(CORESRC): core.org | prebuild
+	org-tangle $<
+
+$(EPIGYNYSRC): epigyny.org | prebuild
+	org-tangle $<
+
+$(DRIVERSRC): driver.org | prebuild
+	org-tangle $<
+
+$(REPLSRC): repl.org | prebuild
+	org-tangle $<
+
+$(UTILSRC): utility.org | prebuild
 	org-tangle $<
 
 $(COREFSMSRC): egg-fsm.xlsx | prebuild

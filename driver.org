@@ -1,0 +1,669 @@
+#+STARTUP: indent
+
+* 驱动代码
+** 串口
+#+begin_src c :tangle /dev/shm/eggos/uart.h
+  #ifndef __UART_H
+  #define __UART_H
+  #include <stdint.h>
+  #include "ring.h"
+  struct uart_context_t;
+  typedef void (* uart_setup_fn)(struct uart_context_t * ctx);
+  typedef void (* uart_eventloop_fn)(struct uart_context_t * ctx);
+  struct uart_context_t {
+    uint32_t baudrate;
+    uint8_t databits, stopbits;
+    struct ring_t * tx, * rx;
+    uint32_t loop_timer;
+    uint32_t loop_interval;
+    uint32_t tx_timer;
+    uint32_t tx_interval;
+    uint32_t tx_to_send;
+    uint8_t slot_enabled;
+    uint8_t manual;
+    uint32_t flow_port;
+    uint32_t flow_io;
+    uint32_t flow_rcc;
+    //uint8_t uart;
+    uart_setup_fn setup;
+    uart_eventloop_fn eventloop;
+  };
+
+  void uart_init(uint8_t idx, struct uart_context_t * ctx);
+  void uart_setup(void);
+  void uart_start(void);
+  void uart_eventloop(void);
+  struct uart_context_t * uart_context(uint8_t idx);
+  #endif
+#+end_src
+
+#+begin_src c :tangle /dev/shm/eggos/uart.c
+  #include <libopencm3/stm32/gpio.h>
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/usart.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include <stddef.h>
+  #include "defination.h"
+  #include "uart.h"
+
+  static int RCC_UART[2] = {
+    RCC_USART1,
+    RCC_USART2,
+  };
+
+  static int RCC_UART_GPIO[2] = {
+    RCC_GPIOB,
+    RCC_GPIOA,
+  };
+
+  static uint8_t NVIC_UART_IRQ[2] = {
+    NVIC_USART1_IRQ,
+    NVIC_USART2_IRQ,
+  };
+
+  static uint32_t TX_GPIO_PORT[2] = {
+    GPIOB,
+    GPIOA,
+  };
+
+  static uint32_t RX_GPIO_PORT[2] = {
+    GPIOB,
+    GPIOA,
+  };
+
+  static int TX_GPIO_IO[2] = {
+    GPIO6,
+    GPIO2,
+  };
+
+  static int RX_GPIO_IO[2] = {
+    GPIO7,
+    GPIO3,
+  };
+
+  static uint32_t UART[2] = {
+    USART1,
+    USART2,
+  };
+
+  static uint32_t GPIO_AF[2] = {
+    GPIO_AF0,
+    GPIO_AF1,
+  };
+
+  struct uart_context_t * ctxs[2] = { NULL, NULL };
+
+  void uart_init(uint8_t idx, struct uart_context_t * ctx) {
+    ctxs[idx - 1] = ctx;
+  }
+
+  void uart_setup() {
+    for (uint8_t i = 0; i < 2; i ++) {
+      if (ctxs[i] != NULL) {
+        ctxs[i]->setup(ctxs[i]);
+
+        rcc_periph_clock_enable(RCC_UART[i]);
+        rcc_periph_clock_enable(RCC_UART_GPIO[i]);
+
+        nvic_enable_irq(NVIC_UART_IRQ[i]);
+
+        gpio_mode_setup(TX_GPIO_PORT[i], GPIO_MODE_AF, GPIO_PUPD_NONE, TX_GPIO_IO[i]);
+        gpio_mode_setup(RX_GPIO_PORT[i], GPIO_MODE_AF, GPIO_PUPD_NONE, RX_GPIO_IO[i]);
+
+        gpio_set_af(TX_GPIO_PORT[i], GPIO_AF[i], TX_GPIO_IO[i]);
+        gpio_set_af(RX_GPIO_PORT[i], GPIO_AF[i], RX_GPIO_IO[i]);
+        if (ctxs[i]->manual == 1) {
+          rcc_periph_clock_enable(ctxs[i]->flow_rcc);
+          gpio_mode_setup(ctxs[i]->flow_port, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ctxs[i]->flow_io);
+          gpio_clear(ctxs[i]->flow_port, ctxs[i]->flow_io);
+        }
+
+        /* Setup UART parameters. */
+        usart_set_baudrate(UART[i], ctxs[i]->baudrate);
+        usart_set_databits(UART[i], ctxs[i]->databits);
+        usart_set_stopbits(UART[i], ctxs[i]->stopbits);
+        usart_set_mode(UART[i], USART_MODE_TX_RX);
+        usart_set_parity(UART[i], USART_PARITY_NONE);
+        usart_set_flow_control(UART[i], USART_FLOWCONTROL_NONE);
+
+        /* Enable receive interrupt. */
+        USART_CR1(UART[i]) |= USART_CR1_RXNEIE;
+
+        /* Finally enable the USART. */
+        usart_enable(UART[i]);
+      }
+    }
+  }
+
+  void uart_eventloop() {
+    for (uint8_t i = 0; i < 2; i ++) {
+      struct uart_context_t * ctx = ctxs[i];
+      if (ctx != NULL) {
+        if (UINT32_DIFF_GREATER_THAN(systick, ctx->loop_timer, ctx->loop_interval)) {
+          ctx->loop_timer = systick;
+          ctx->eventloop(ctx);
+        }
+        if (UINT32_DIFF_GREATER_THAN(systick, ctx->tx_timer, ctx->tx_interval)) {
+          ctx->tx_timer = systick;
+          if (ctx->tx_to_send == 0) {
+            if (ring_length(ctx->tx) > 1) {
+              // saved length as varint type
+              uint32_t len = 0;
+              uint8_t byte = 0;
+              uint8_t count = 0;
+              ring_read(ctx->tx, &byte);
+              while (byte > 127 && ring_length(ctx->tx) > 0) {
+                ring_read(ctx->tx, &byte);
+                len |= (byte & 0x7F) << (count * 7);
+                count ++;
+              }
+              len |= (byte & 0x7F) << (count * 7);
+
+              ctx->tx_to_send = len;
+            }
+          } else if (ctx->slot_enabled == 1) {
+            if (UINT32_DIFF_GREATER_THAN(systick, slot, 0) && (UINT32_DIFF_GREATER_THAN(slot + 100, systick, 0))) {
+              if (ctx->manual == 1) {
+                gpio_set(ctx->flow_port, ctx->flow_io);
+              }
+              USART_CR1(UART[i]) |= USART_CR1_TXEIE;
+            } else {
+              USART_CR1(UART[i]) &= ~USART_CR1_TXEIE;
+              if (ctx->manual == 1) {
+                gpio_clear(ctx->flow_port, ctx->flow_io);
+              }
+            }
+          } else {
+            if (ctx->manual == 1) {
+              gpio_set(ctx->flow_port, ctx->flow_io);
+            }
+            USART_CR1(UART[i]) |= USART_CR1_TXEIE;
+          }
+        }
+      }
+    }
+  }
+
+  struct uart_context_t * uart_context(uint8_t idx) {
+    return ctxs[idx - 1];
+  }
+
+  static void uart_isr(uint8_t idx) {
+
+    uint8_t data = 0;
+    uint32_t result = 0;
+
+    struct uart_context_t * ctx = ctxs[idx];
+    if (ctx == NULL) return;
+
+    /* Check if we were called because of RXNE. */
+    if (((USART_CR1(UART[idx]) & USART_CR1_RXNEIE) != 0) && ((USART_ISR(UART[idx]) & USART_ISR_RXNE) != 0)) {
+
+      /* Retrieve the data from the peripheral. */
+      data = usart_recv(UART[idx]);
+      ring_write(ctx->rx, data);
+      if (ring_available(ctx->rx) == 0) {
+        /* Disable the RXNEIE interrupt */
+        USART_CR1(UART[idx]) &= ~USART_CR1_RXNEIE;
+      }
+    }
+
+    /* Check if we were called because of TXE. */
+    if (((USART_CR1(UART[idx]) & USART_CR1_TXEIE) != 0) && ((USART_ISR(UART[idx]) & USART_ISR_TXE) != 0)) {
+      if (ctx->tx_to_send == 0) {
+        USART_CR1(UART[idx]) &= ~USART_CR1_TXEIE;
+        if (ctx->manual == 1) {
+          /* Enable transmission complete interrupt. */
+          USART_CR1(UART[idx]) |= USART_CR1_TCIE;
+        }
+
+        return;
+      }
+
+      result = ring_read(ctx->tx, &data);
+
+      if (result == 0) {
+        /* Disable the TXE interrupt, it's no longer needed. */
+        USART_CR1(UART[idx]) &= ~USART_CR1_TXEIE;
+      } else {
+        /* Put data into the transmit register. */
+        usart_send(UART[idx], data);
+        ctx->tx_to_send --;
+      }
+    }
+
+    /* Check if we were called because of TC. */
+    if (((USART_CR1(UART[idx]) & USART_CR1_TCIE) != 0) && ((USART_ISR(UART[idx]) & USART_ISR_TC) != 0)) {
+      if (ctx->tx_to_send == 0) {
+        USART_CR1(UART[idx]) &= ~USART_CR1_TCIE;
+        gpio_clear(ctx->flow_port, ctx->flow_io);
+        return;
+      }
+    }
+  }
+
+  void usart1_isr(void) {
+    uart_isr(1 - 1);
+  }
+
+  void usart2_isr(void) {
+    uart_isr(2 - 1);
+  }
+#+end_src
+** 锁控
+#+begin_src c :tangle /dev/shm/eggos/lock.h
+  #ifndef __LOCK_H
+  #define __LOCK_H
+  #include <stdint.h>
+
+  void lock_setup(void);
+  void lock_off(uint8_t cabin);
+  void lock_on(uint8_t cabin);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/lock.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "lock.h"
+  #include "defination.h"
+  #include "repl.h"
+
+  static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
+  static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
+
+  void lock_setup(void) {
+    rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
+    for (uint8_t i = 0; i < 16; i ++) {
+      gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+      gpio_set_output_options(ports[i], GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, ios[i]);
+      gpio_clear(ports[i], ios[i]);
+    }
+  }
+
+  void lock_off(uint8_t cabin) {
+    gpio_set(ports[cabin], ios[cabin]);
+    locking_off_cabins |= 1 << cabin;
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" lock-off ");
+      output_uint32(cabin + 1);
+      output_newline();
+    }
+  }
+
+  void lock_on(uint8_t cabin) {
+    gpio_clear(ports[cabin], ios[cabin]);
+    locking_off_cabins &= ~(1 << cabin);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" lock-on ");
+      output_uint32(cabin + 1);
+      output_newline();
+    }
+  }
+#+end_src
+** 红外检测
+#+begin_src c :tangle /dev/shm/eggos/infrared.h
+  #ifndef __INFRARED_H
+  #define __INFRARED_H
+  void infrared_setup(void);
+  void infrared_eventloop(void);
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/infrared.c
+  #include <stdint.h>
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include <libopencm3/stm32/exti.h>
+  #include "defination.h"
+  #include "infrared.h"
+  #include "lock.h"
+  #include "repl.h"
+  #include "utility.h"
+  #include "egg-fsm.h"
+  #include "egg-infrared-fsm.h"
+
+  static uint16_t fallen = 0;
+  static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
+  static uint32_t ports[16] = {GPIOC, GPIOC, GPIOD, GPIOB, GPIOB, GPIOB, GPIOF, GPIOF, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA};
+  static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
+  static uint8_t exti_to_idx[16] = {14, 15, 8, 9, 10, 11, 1, 2, 12, 13, 5, 6, 7, 0, 3, 4};
+  static uint8_t idx_to_exti[16] = {13, 6, 7, 14, 15, 10, 11, 12, 2, 3, 4, 5, 8, 9, 0, 1};
+  static uint32_t infrared_states[16] = {EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE};
+  static uint32_t delay_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  static uint32_t aftercase_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  static uint16_t exti_value = 0XFF;
+
+  void infrared_setup(void) {
+    rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
+    rcc_periph_clock_enable(RCC_GPIOD);
+    rcc_periph_clock_enable(RCC_GPIOF);
+
+    /* enable syscfg :], or else changing exti source from GPIOA is impossible */
+    rcc_periph_clock_enable(RCC_SYSCFG_COMP);
+
+    for (uint8_t i = 0; i < 16; i ++) {
+      gpio_mode_setup(ports[i], GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, ios[i]);
+      exti_select_source(extis[i], ports[i]);
+      exti_set_trigger(extis[i], EXTI_TRIGGER_FALLING);
+      exti_reset_request(extis[i]);
+      exti_enable_request(extis[i]);
+    }
+
+    nvic_enable_irq(NVIC_EXTI0_1_IRQ);
+    nvic_enable_irq(NVIC_EXTI2_3_IRQ);
+    nvic_enable_irq(NVIC_EXTI4_15_IRQ);
+  }
+
+  void infrared_eventloop(void) {
+    uint8_t stepper = 0;
+    while (fallen != 0) {
+      if ((fallen & (1 << stepper)) != 0) {
+        infrared_states[stepper] = egg_infrared_transform_state(infrared_states[stepper], EGG_INFRARED_EXTI_EVENT, &stepper);
+        fallen &= ~(1 << stepper);
+      }
+      stepper ++;
+    }
+    for (uint8_t i = 0; i < 16; i ++) {
+      if (infrared_states[i] == EGG_INFRARED_DELAY1_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_DELAY2_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_CHECKING1_STATE) {
+        if ((exti_value & (1 << i)) == 0) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
+        } else {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_CHECKING2_STATE) {
+        if ((exti_value & (1 << i)) == 0) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
+        } else {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
+        }
+      } else if (infrared_states[i] == EGG_INFRARED_AFTERCASE_STATE) {
+        if (UINT32_DIFF_GREATER_THAN(systick, aftercase_timers[i], 100)) {
+          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+        }
+      }
+    }
+  }
+
+  void egg_infrared_do_action(enum EGG_INFRARED_ACTION action, void * data) {
+    uint8_t cabin = * (uint8_t *) data;
+    switch (action) {
+    case EGG_INFRARED_START_DELAYER_ACTION:
+      delay_timers[cabin] = systick;
+      break;
+    case EGG_INFRARED_CHECK_ACTION:
+      if (gpio_get(ports[idx_to_exti[cabin]], ios[idx_to_exti[cabin]]) == 0) {
+        exti_value &= ~(1 << cabin);
+      } else {
+        exti_value |= (1 << cabin);
+      }
+      break;
+    case EGG_INFRARED_CLEAR_ACTION:
+      exti_value |= 1 << cabin;
+      break;
+    case EGG_INFRARED_TRIGGER_ACTION:
+      egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_INFRARED_TRIGGERED_EVENT, &cabin);
+      aftercase_timers[cabin] = systick;
+      if (debug == 1) {
+        output_uint32(systick);
+        output_string(" Infrared ");
+        output_uint32(cabin + 1);
+        output_string(" triggered\r\n");
+      }
+      break;
+    }
+  }
+
+  void exti0_1_isr(void) {
+    if (exti_get_flag_status(EXTI0)) {
+      fallen |= (1 << exti_to_idx[0]);
+      exti_reset_request(EXTI0);
+    }
+    if (exti_get_flag_status(EXTI1)) {
+      fallen |= (1 << exti_to_idx[1]);
+      exti_reset_request(EXTI1);
+    }
+  }
+
+  void exti2_3_isr(void) {
+    if (exti_get_flag_status(EXTI2)) {
+      fallen |= (1 << exti_to_idx[2]);
+      exti_reset_request(EXTI2);
+    }
+    if (exti_get_flag_status(EXTI3)) {
+      fallen |= (1 << exti_to_idx[3]);
+      exti_reset_request(EXTI3);
+    }
+  }
+
+  void exti4_15_isr(void) {
+    for (uint8_t i = 4; i < 16; i ++) {
+      if (exti_get_flag_status(extis[i])) {
+        fallen |= (1 << exti_to_idx[i]);
+        exti_reset_request(extis[i]);
+      }
+    }
+  }
+#+end_src
+
+注意：
+
+1. EXTI 和 GPIO 是一一对应关系，EXTI0 只能由 PX0 触发。
+
+2. 如果要 GPIOA 以外的 IO 口都能触发外部中断，必须使能 RCC_SYSCFG_COMP。
+
+** 音频
+
+#+begin_src c :tangle /dev/shm/eggos/speaker.h
+  #ifndef _SPEAKER_H
+  #define _SPEAKER_H
+  #include <stdint.h>
+  void speaker_setup(void);
+  void speaker_eventloop(void);
+  void speaker_play(uint16_t idx);
+  void speaker_volume(uint8_t vol);
+  #endif
+#+end_src
+
+#+begin_src c :tangle /dev/shm/eggos/speaker.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include <libopencm3/stm32/timer.h>
+  #include <libopencm3/cm3/nvic.h>
+  #include "speaker.h"
+  #include "defination.h"
+  #include "utility.h"
+  #include "ring.h"
+  #include "repl.h"
+
+  #define SPEAKER_TIM_RCC     RCC_TIM2
+  #define SPEAKER_GPIO_RCC    RCC_GPIOA
+  #define SPEAKER_TIM         TIM2
+  #define SPEAKER_TIM_RST     RST_TIM2
+  #define SPEAKER_PORT        GPIOA
+  #define SPEAKER_IO          GPIO1
+  #define SPEAKER_NVIC_IRQ    NVIC_TIM2_IRQ
+
+  #define SPEAKER_BUFFER_BITSIZE 4
+
+  struct ring_t speaker_tx;
+  uint8_t speaker_tx_buffer[2 << (SPEAKER_BUFFER_BITSIZE - 1)];
+
+  static volatile uint8_t count_to_send = 0; // count of bit to send
+  static volatile uint16_t data = 0;
+
+  static void speaker_write(uint8_t byte) {
+    while (count_to_send != 0);
+    data = ((((uint16_t)byte) << 1) | 0x0200);
+    count_to_send = 10;
+  }
+
+  void speaker_setup(void) {
+
+    ring_init(&speaker_tx, speaker_tx_buffer, SPEAKER_BUFFER_BITSIZE);
+
+    rcc_periph_clock_enable(SPEAKER_TIM_RCC);
+    rcc_periph_clock_enable(SPEAKER_GPIO_RCC);
+
+    gpio_mode_setup(SPEAKER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLUP, SPEAKER_IO);
+    gpio_set_output_options(SPEAKER_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SPEAKER_IO);
+
+    /* Reset TIM2 peripheral to defaults. */
+    rcc_periph_reset_pulse(SPEAKER_TIM_RST);
+
+    timer_set_mode(SPEAKER_TIM, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
+
+    timer_set_prescaler(SPEAKER_TIM, 499);
+
+    timer_set_period(SPEAKER_TIM, 9);
+
+    /* Enable TIM2 interrupt. */
+
+    nvic_enable_irq(SPEAKER_NVIC_IRQ);
+    timer_enable_update_event(SPEAKER_TIM); /* default at reset! */
+    timer_enable_irq(SPEAKER_TIM, TIM_DIER_UIE);
+    timer_enable_counter(SPEAKER_TIM);
+
+    speaker_volume(15);
+    speaker_volume(15);
+  }
+
+  void speaker_play(uint16_t idx) {
+    uint8_t cmd[] = { 0x7E, 0x05, 0x41, 0x00, 0x00, 0x00, 0xEF };
+    cmd[3] = (idx >> 8) & 0xFF;
+    cmd[4] = (idx >> 0) & 0xFF;
+    cmd[5] = cmd[1] ^ cmd[2] ^ cmd[3] ^ cmd[4];
+    ring_write_array(&speaker_tx, cmd, 0, 7);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" play ");
+      output_uint32(idx);
+      output_newline();
+    }
+  }
+
+  void speaker_volume(uint8_t vol) {
+    uint8_t cmd[] = { 0x7E, 0x04, 0x31, 0x00, 0x00, 0xEF };
+    cmd[3] = vol;
+    cmd[4] = cmd[1] ^ cmd[2] ^ cmd[3];
+    ring_write_array(&speaker_tx, cmd, 0, 6);
+    if (debug == 1) {
+      output_uint32(systick);
+      output_string(" volume ");
+      output_uint32(vol);
+      output_newline();
+    }
+  }
+
+  void speaker_eventloop(void) {
+    if (ring_length(&speaker_tx) > 0) {
+      uint8_t byte = 0;
+      if (ring_read(&speaker_tx, &byte) != 0) {
+        speaker_write(byte);
+      }
+    }
+  }
+
+  void tim2_isr(void) {
+    if (TIM_SR(SPEAKER_TIM) & TIM_SR_UIF) {
+      if (count_to_send == 0) {
+        TIM_SR(SPEAKER_TIM) &= ~TIM_SR_UIF;
+        return;
+      }
+      if ((data & 0x01) == 0) {
+        gpio_clear(SPEAKER_PORT, SPEAKER_IO);
+      } else {
+        gpio_set(SPEAKER_PORT, SPEAKER_IO);
+      }
+      data >>= 1;
+      count_to_send --;
+      TIM_SR(SPEAKER_TIM) &= ~TIM_SR_UIF;
+    }
+  }
+#+end_src
+** GPIO
+控制灯光
+#+begin_src c :tangle /dev/shm/eggos/gpio.h
+  #ifndef __GPIO_H
+  #define __GPIO_H
+  #include <stdint.h>
+
+  void gpio_setup(void);
+  void gpio_exclamation_mark(uint8_t gpio);
+
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/gpio.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "gpio.h"
+
+  static uint32_t ports[4] = {GPIOC, GPIOC, GPIOB, GPIOB};
+  static uint32_t ios[4] = {GPIO4, GPIO5, GPIO0, GPIO1};
+
+  void gpio_setup() {
+    rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
+    for (uint8_t i = 0; i < 4; i ++) {
+      gpio_mode_setup(ports[i], GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, ios[i]);
+      gpio_set(ports[i], ios[i]);
+    }
+  }
+
+  void gpio_exclamation_mark(uint8_t gpio) {
+    for (uint8_t i = 0; i < 4; i ++) {
+      if ((gpio & (1 << i)) != 0) {
+        gpio_clear(ports[i], ios[i]);
+      } else {
+        gpio_set(ports[i], ios[i]);
+      }
+    }
+  }
+#+end_src
+** LED
+#+begin_src c :tangle /dev/shm/eggos/led.h
+  #ifndef __LED_H
+  #define __LED_H
+
+  void led_setup(void);
+  void led_on(void);
+  void led_off(void);
+  #endif
+#+end_src
+#+begin_src c :tangle /dev/shm/eggos/led.c
+  #include <libopencm3/stm32/rcc.h>
+  #include <libopencm3/stm32/gpio.h>
+  #include "led.h"
+
+  #define LED_RCC             RCC_GPIOF
+  #define LED_PORT            GPIOF
+  #define LED_IO              GPIO5
+
+  void led_setup() {
+    rcc_periph_clock_enable(LED_RCC);
+    gpio_mode_setup(LED_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED_IO);
+    led_off();
+  }
+
+  void led_on() {
+    gpio_clear(LED_PORT, LED_IO);
+  }
+
+  void led_off() {
+    gpio_set(LED_PORT, LED_IO);
+  }
+#+end_src
