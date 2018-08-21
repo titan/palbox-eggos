@@ -139,11 +139,11 @@
     for (uint8_t i = 0; i < 2; i ++) {
       struct uart_context_t * ctx = ctxs[i];
       if (ctx != NULL) {
-        if (UINT32_DIFF_GREATER_THAN(systick, ctx->loop_timer, ctx->loop_interval)) {
+        if (systick - ctx->loop_timer > ctx->loop_interval) {
           ctx->loop_timer = systick;
           ctx->eventloop(ctx);
         }
-        if (UINT32_DIFF_GREATER_THAN(systick, ctx->tx_timer, ctx->tx_interval)) {
+        if (systick - ctx->tx_timer > ctx->tx_interval) {
           ctx->tx_timer = systick;
           if (ctx->tx_to_send == 0) {
             if (ring_length(ctx->tx) > 1) {
@@ -162,7 +162,7 @@
               ctx->tx_to_send = len;
             }
           } else if (ctx->slot_enabled == 1) {
-            if (UINT32_DIFF_GREATER_THAN(systick, slot, 0) && (UINT32_DIFF_GREATER_THAN(slot + 100, systick, 0))) {
+            if ((systick - slot > 1) && (slot + SLOT_LEN - ctx->tx_to_send * 2 - systick > 0)) {
               if (ctx->manual == 1) {
                 gpio_set(ctx->flow_port, ctx->flow_io);
               }
@@ -250,6 +250,12 @@
     uart_isr(2 - 1);
   }
 #+end_src
+
+注意，在使用发送窗口时，窗口关闭时间要考虑剩余发送字节长度。即，必须保
+证在发送窗口内，能发送完毕所有字节。按 9600 的波特率来算，发送一个字节
+大概需要 1.2 ms，在驱动中取整为 2 ms。因此 slot + SLOT_LEN 要减去
+tx_to_send * 2。
+
 ** 锁控
 #+begin_src c :tangle /dev/shm/eggos/lock.h
   #ifndef __LOCK_H
@@ -269,8 +275,10 @@
   #include "defination.h"
   #include "repl.h"
 
-  static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
-  static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
+  //static uint32_t ports[16] = {GPIOA, GPIOA, GPIOA, GPIOA, GPIOA, GPIOC, GPIOC, GPIOC, GPIOC, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB};
+  //static uint32_t ios[16] = {GPIO12, GPIO11, GPIO10, GPIO9, GPIO8, GPIO9, GPIO8, GPIO7, GPIO6, GPIO15, GPIO14, GPIO13, GPIO12, GPIO11, GPIO10, GPIO2};
+  static uint32_t ports[16] = {GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA, GPIOA, GPIOA};
+  static uint32_t ios[16] = {GPIO2, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15, GPIO6, GPIO7, GPIO8, GPIO9, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12};
 
   void lock_setup(void) {
     rcc_periph_clock_enable(RCC_GPIOA);
@@ -306,11 +314,26 @@
   }
 #+end_src
 ** 红外检测
+
+红外检测的原理：
+
+1. 外部中断在下降沿被触发，检测状态机切换的检测状态
+
+2. 每 10 ms 采集一次红外 GPIO 上的结果，送入状态机进行记录
+
+3. 对已经采集到的数据用3位卷积的方式进行低通过滤，结果存入 value 中
+   （最高2位无效）
+
+4. 在 value 中，在最低位是 111 （最近 30 ms 都是高电位） 时，往前查找
+   000111 特征值（低电位转化到高电位，时间足够长）。找打特征值就表明红
+   外触发，否则属于干扰。
+
 #+begin_src c :tangle /dev/shm/eggos/infrared.h
   #ifndef __INFRARED_H
   #define __INFRARED_H
   void infrared_setup(void);
   void infrared_eventloop(void);
+  void infrared_timeout(uint8_t cabin);
   #endif
 #+end_src
 #+begin_src c :tangle /dev/shm/eggos/infrared.c
@@ -327,16 +350,21 @@
   #include "egg-fsm.h"
   #include "egg-infrared-fsm.h"
 
-  static uint16_t fallen = 0;
+  struct infrared_context {
+    uint32_t state;
+    uint32_t sequence;
+    uint32_t timer;
+  };
+
+  static uint16_t exti_triggered = 0;
   static uint32_t extis[16] = {EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7, EXTI8, EXTI9, EXTI10, EXTI11, EXTI12, EXTI13, EXTI14, EXTI15};
   static uint32_t ports[16] = {GPIOC, GPIOC, GPIOD, GPIOB, GPIOB, GPIOB, GPIOF, GPIOF, GPIOB, GPIOB, GPIOC, GPIOC, GPIOC, GPIOA, GPIOA, GPIOA};
   static uint32_t ios[16] = {GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO11, GPIO12, GPIO13, GPIO14, GPIO15};
-  static uint8_t exti_to_idx[16] = {14, 15, 8, 9, 10, 11, 1, 2, 12, 13, 5, 6, 7, 0, 3, 4};
-  static uint8_t idx_to_exti[16] = {13, 6, 7, 14, 15, 10, 11, 12, 2, 3, 4, 5, 8, 9, 0, 1};
-  static uint32_t infrared_states[16] = {EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE, EGG_INFRARED_READY_STATE};
-  static uint32_t delay_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  static uint32_t aftercase_timers[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  static uint16_t exti_value = 0XFF;
+  //static uint8_t exti_to_idx[16] = {14, 15, 8, 9, 10, 11, 1, 2, 12, 13, 5, 6, 7, 0, 3, 4};
+  static uint8_t exti_to_idx[16] = {1, 0, 7, 6, 5, 4, 14, 13, 3, 2, 10, 9, 8, 15, 12, 11};
+  //static uint8_t idx_to_exti[16] = {13, 6, 7, 14, 15, 10, 11, 12, 2, 3, 4, 5, 8, 9, 0, 1};
+  static uint8_t idx_to_exti[16] = {1, 0, 9, 8, 5, 4, 3, 2, 12, 11, 10, 15, 14, 7, 6, 13};
+  static struct infrared_context ctxs[16];
 
   void infrared_setup(void) {
     rcc_periph_clock_enable(RCC_GPIOA);
@@ -354,74 +382,97 @@
       exti_set_trigger(extis[i], EXTI_TRIGGER_FALLING);
       exti_reset_request(extis[i]);
       exti_enable_request(extis[i]);
+
+      bzero(&ctxs[i], sizeof(struct infrared_context));
+      ctxs[i].sequence = 0xFFFFFFFF;
+      ctxs[i].state = EGG_INFRARED_READY_STATE;
     }
 
     nvic_enable_irq(NVIC_EXTI0_1_IRQ);
     nvic_enable_irq(NVIC_EXTI2_3_IRQ);
     nvic_enable_irq(NVIC_EXTI4_15_IRQ);
+
   }
 
+  uint32_t timer = 0;
+
   void infrared_eventloop(void) {
-    uint8_t stepper = 0;
-    while (fallen != 0) {
-      if ((fallen & (1 << stepper)) != 0) {
-        infrared_states[stepper] = egg_infrared_transform_state(infrared_states[stepper], EGG_INFRARED_EXTI_EVENT, &stepper);
-        fallen &= ~(1 << stepper);
+    uint8_t idx = 0;
+    while (exti_triggered != 0) {
+      if ((exti_triggered & (1 << idx)) != 0) {
+        ctxs[idx].state = egg_infrared_transform_state(ctxs[idx].state, EGG_INFRARED_EXTI_EVENT, &idx);
+        exti_triggered &= ~(1 << idx);
       }
-      stepper ++;
+      idx ++;
     }
     for (uint8_t i = 0; i < 16; i ++) {
-      if (infrared_states[i] == EGG_INFRARED_DELAY1_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
-        }
-      } else if (infrared_states[i] == EGG_INFRARED_DELAY2_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, delay_timers[i], 19)) {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
-        }
-      } else if (infrared_states[i] == EGG_INFRARED_CHECKING1_STATE) {
-        if ((exti_value & (1 << i)) == 0) {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
-        } else {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
-        }
-      } else if (infrared_states[i] == EGG_INFRARED_CHECKING2_STATE) {
-        if ((exti_value & (1 << i)) == 0) {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_0_EVENT, &i);
-        } else {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_1_EVENT, &i);
-        }
-      } else if (infrared_states[i] == EGG_INFRARED_AFTERCASE_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, aftercase_timers[i], 100)) {
-          infrared_states[i] = egg_infrared_transform_state(infrared_states[i], EGG_INFRARED_TIMEOUT_EVENT, &i);
+    continue_loop:
+      if (ctxs[i].state == EGG_INFRARED_CHECKING_STATE) {
+        if (systick > ctxs[i].timer) {
+          if (gpio_get(ports[idx_to_exti[i]], ios[idx_to_exti[i]]) == 0) {
+            ctxs[i].state = egg_infrared_transform_state(ctxs[i].state, EGG_INFRARED_0_EVENT, &i);
+          } else {
+            ctxs[i].state = egg_infrared_transform_state(ctxs[i].state, EGG_INFRARED_1_EVENT, &i);
+          }
+          // calculate convolution (low-pass filter)
+          uint32_t value = 0;
+          for (int j = 32 - 3; j >= 0; j --) {
+            value <<= 1;
+            switch ((ctxs[i].sequence >> j) & 0x07) {
+            case 3:
+            case 5:
+            case 6:
+            case 7:
+              value |= 1;
+              break;
+            default:
+              break;
+            }
+          }
+
+          // check
+          if ((value & 0x07) == 0x07) { // it must be 111 now
+            for (uint8_t k = 3; k < 32 - 3 - 6; k ++) {
+              uint8_t slice = (value >> k) & 0x3F;
+              if (((slice & 0x07) == 0x07) && (((slice >> 3) & 0x07) == 0) && ((value & (0xFFFFFFFF >> (32 - k))) != 0)) {
+                // found sequence: 000111 and right sequence is 1.1...
+                ctxs[i].state = egg_infrared_transform_state(ctxs[i].state, EGG_INFRARED_DETECTED_EVENT, &i);
+                goto continue_loop;
+              }
+            }
+          }
         }
       }
     }
+  }
+
+  void infrared_timeout(uint8_t idx) {
+    ctxs[idx].state = egg_infrared_transform_state(ctxs[idx].state, EGG_INFRARED_TIMEOUT_EVENT, &idx);
   }
 
   void egg_infrared_do_action(enum EGG_INFRARED_ACTION action, void * data) {
-    uint8_t cabin = * (uint8_t *) data;
+    uint8_t idx = * (uint8_t *) data;
+
     switch (action) {
-    case EGG_INFRARED_START_DELAYER_ACTION:
-      delay_timers[cabin] = systick;
+    case EGG_INFRARED_INIT_ACTION:
+      ctxs[idx].sequence = 0xFFFFFFFF;
+      ctxs[idx].timer = systick + 10; // interval of 10 ms
       break;
-    case EGG_INFRARED_CHECK_ACTION:
-      if (gpio_get(ports[idx_to_exti[cabin]], ios[idx_to_exti[cabin]]) == 0) {
-        exti_value &= ~(1 << cabin);
-      } else {
-        exti_value |= (1 << cabin);
-      }
+    case EGG_INFRARED_SET_0_ACTION:
+      ctxs[idx].sequence <<= 1;
+      ctxs[idx].timer = systick + 10; // interval of 10 ms
       break;
-    case EGG_INFRARED_CLEAR_ACTION:
-      exti_value |= 1 << cabin;
+    case EGG_INFRARED_SET_1_ACTION:
+      ctxs[idx].sequence <<= 1;
+      ctxs[idx].sequence |= 0x01;
+      ctxs[idx].timer = systick + 10; // interval of 10 ms
       break;
     case EGG_INFRARED_TRIGGER_ACTION:
-      egg_states[cabin] = egg_transform_state(egg_states[cabin], EGG_INFRARED_TRIGGERED_EVENT, &cabin);
-      aftercase_timers[cabin] = systick;
+      egg_states[idx] = egg_transform_state(egg_states[idx], EGG_INFRARED_TRIGGERED_EVENT, &idx);
       if (debug == 1) {
         output_uint32(systick);
         output_string(" Infrared ");
-        output_uint32(cabin + 1);
+        output_uint32(idx + 1);
         output_string(" triggered\r\n");
       }
       break;
@@ -430,22 +481,22 @@
 
   void exti0_1_isr(void) {
     if (exti_get_flag_status(EXTI0)) {
-      fallen |= (1 << exti_to_idx[0]);
+      exti_triggered |= (1 << exti_to_idx[0]);
       exti_reset_request(EXTI0);
     }
     if (exti_get_flag_status(EXTI1)) {
-      fallen |= (1 << exti_to_idx[1]);
+      exti_triggered |= (1 << exti_to_idx[1]);
       exti_reset_request(EXTI1);
     }
   }
 
   void exti2_3_isr(void) {
     if (exti_get_flag_status(EXTI2)) {
-      fallen |= (1 << exti_to_idx[2]);
+      exti_triggered |= (1 << exti_to_idx[2]);
       exti_reset_request(EXTI2);
     }
     if (exti_get_flag_status(EXTI3)) {
-      fallen |= (1 << exti_to_idx[3]);
+      exti_triggered |= (1 << exti_to_idx[3]);
       exti_reset_request(EXTI3);
     }
   }
@@ -453,7 +504,7 @@
   void exti4_15_isr(void) {
     for (uint8_t i = 4; i < 16; i ++) {
       if (exti_get_flag_status(extis[i])) {
-        fallen |= (1 << exti_to_idx[i]);
+        exti_triggered |= (1 << exti_to_idx[i]);
         exti_reset_request(extis[i]);
       }
     }

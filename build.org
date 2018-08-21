@@ -335,7 +335,7 @@
   OBJS += base64.o egg-fsm.o egg-infrared-fsm.o egg-proto-fsm.o egg-repl-fsm.o egg-repl-lex-fsm.o egg_payload.o egg_packet.o epigyny.o gpio.o hash.o infrared.o led.o lock.o repl.o ring.o speaker.o stack.o uart.o utility.o zeropack.o
 
   include config
-  CFLAGS += -DZEROPACK_EGG_PAYLOAD_ENABLED -D EGGID=$(EGGID)
+  CFLAGS += -DZEROPACK_EGG_PAYLOAD_ENABLED -D EGGID=$(EGGID) -D SLOT_LEN=$(SLOT_LEN)
 
   OPENCM3_DIR = libopencm3
   LDSCRIPT = stm32f0.ld

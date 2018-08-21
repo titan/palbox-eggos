@@ -393,9 +393,6 @@ uint32_t base64_decode(const uint8_t * src, const uint32_t len, uint8_t * dst, c
   #ifndef __DEFINATION_H
   #define __DEFINATION_H
 
-  #define UINT32_DIFF_LESS_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) < (delta))) || (((a) > (b)) && ((a) - (b) < (delta))))
-  #define UINT32_DIFF_GREATER_THAN(a, b, delta) ((((a) < (b)) && ((a) + 0xFFFFFFFF - (b) > (delta))) || (((a) > (b)) && ((a) - (b) > (delta))))
-
   extern volatile uint32_t systick;
   extern uint32_t slot;
   extern uint32_t egg_states[16];

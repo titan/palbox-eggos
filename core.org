@@ -131,45 +131,37 @@ REPL通讯挂在串口1上。
 在初始化完成后，系统进入主循环，根据当前的状态和发生的事件，推动状态机
 运行。
 #+begin_src c :noweb-ref main-loop
-  if (UINT32_DIFF_GREATER_THAN(systick, loop_timer, 299)) {
+  if (systick - loop_timer > 299) {
     loop_timer = systick;
     for (uint8_t i = 0; i < 16; i ++) {
       if (egg_states[i] == EGG_DELAYING_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, delaying_timers[i], 199)) {
+        if (systick - delaying_timers[i] > 199) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_DELAY_TIMEOUT_EVENT, &i);
         }
       } else if (egg_states[i] == EGG_LOCKING_OFF_30S_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 29999)) {
+        if (systick - locking_timers[i] > 29999) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_30_SECONDS_TIMEOUT_EVENT, &i);
         }
       } else if (egg_states[i] == EGG_LOCKING_OFF_1M_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 59999)) {
+        if (systick - locking_timers[i] > 59999) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_1_MINUTE_TIMEOUT_EVENT, &i);
         }
       } else if (egg_states[i] == EGG_LOCKING_OFF_2M_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 119999)) {
+        if (systick - locking_timers[i] > 119999) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_2_MINUTES_TIMEOUT_EVENT, &i);
         }
       } else if (egg_states[i] == EGG_LOCKING_OFF_3M_STATE) {
-        if (UINT32_DIFF_GREATER_THAN(systick, locking_timers[i], 179999)) {
+        if (systick - locking_timers[i] > 179999) {
           egg_states[i] = egg_transform_state(egg_states[i], EGG_3_MINUTES_TIMEOUT_EVENT, &i);
         }
       }
     }
 
-    if (((loop_timer / 1000) & 1) == 0) {
-      led_off();
-    } else {
-      led_on();
-    }
-
-    /*
     if (locking_off_cabins == 0) {
       led_off();
     } else {
       led_on();
     }
-    ,*/
   }
 #+end_src
 
