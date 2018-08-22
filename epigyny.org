@@ -61,8 +61,8 @@
     ctx->baudrate = 9600;
     ctx->databits = 8;
     ctx->stopbits = 1;
-    ctx->tx_interval = 99; // 100ms
-    ctx->loop_interval = 999; // 1s
+    ctx->tx_interval = 24; // 24 ms
+    ctx->loop_interval = 999; // 1 s
     ctx->slot_enabled = 1;
     ctx->manual = 1;
     ctx->flow_rcc = RCC_GPIOF;
@@ -169,12 +169,20 @@ egg-proto-fsm.xlsx 文件。
 slot 时，要避开同类下位机设备发送给上位机的数据包。
 
 #+begin_src c :noweb-ref proto-callback
+  #include "repl.h"
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
 
     if (buf[6] == 0xFF) {
       slot = systick + SLOT_LEN * EGGID;
       return;
     }
+
+    if ((buf[6] & 0x80) == 0) {
+      // it's not from epigyny
+      return;
+    }
+
+    slot = systick + SLOT_LEN * EGGID;
 
     if ((buf[6] & 0x70) != EGG) {
       // it's not my device type, skip it
@@ -183,9 +191,6 @@ slot 时，要避开同类下位机设备发送给上位机的数据包。
 
     if ((buf[6] & 0x0F) != EGGID && buf[6] != 0xFF) {
       // it's not to me, skip it
-
-      slot = systick + SLOT_LEN * EGGID; // but I still can calculate slot.
-
       return;
     }
 

@@ -134,17 +134,18 @@
       }
     }
   }
+  #include "repl.h"
 
   void uart_eventloop() {
     for (uint8_t i = 0; i < 2; i ++) {
       struct uart_context_t * ctx = ctxs[i];
       if (ctx != NULL) {
-        if (systick - ctx->loop_timer > ctx->loop_interval) {
-          ctx->loop_timer = systick;
+        if (systick > ctx->loop_timer) {
+          ctx->loop_timer = systick + ctx->loop_interval;
           ctx->eventloop(ctx);
         }
-        if (systick - ctx->tx_timer > ctx->tx_interval) {
-          ctx->tx_timer = systick;
+        if (systick > ctx->tx_timer) {
+          ctx->tx_timer = systick + ctx->tx_interval;
           if (ctx->tx_to_send == 0) {
             if (ring_length(ctx->tx) > 1) {
               // saved length as varint type
@@ -162,7 +163,7 @@
               ctx->tx_to_send = len;
             }
           } else if (ctx->slot_enabled == 1) {
-            if ((systick - slot > 1) && (slot + SLOT_LEN - ctx->tx_to_send * 2 - systick > 0)) {
+            if ((slot < systick) && (systick < slot + SLOT_LEN - (ctx->tx_to_send << 1))) {
               if (ctx->manual == 1) {
                 gpio_set(ctx->flow_port, ctx->flow_io);
               }
