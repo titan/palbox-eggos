@@ -78,7 +78,6 @@
 中进行处理。当协议状态机发现接收的是完成数据包时，调用回调函数对上位机
 的命令进行处理。
 #+begin_src c :noweb-ref epigyny-eventloop
-  #include "repl.h"
   void epigyny_eventloop(struct uart_context_t * uartctx) {
     struct ring_t * rx = uartctx->rx;
     uint32_t rxlen = ring_length(rx);

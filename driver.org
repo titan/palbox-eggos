@@ -135,7 +135,6 @@
       }
     }
   }
-  #include "repl.h"
 
   void uart_eventloop() {
     for (uint8_t i = 0; i < 2; i ++) {
