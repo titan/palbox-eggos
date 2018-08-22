@@ -21,6 +21,7 @@
     uint32_t tx_to_send;
     uint8_t slot_enabled;
     uint8_t manual;
+    uint8_t flow_value;
     uint32_t flow_port;
     uint32_t flow_io;
     uint32_t flow_rcc;
@@ -163,20 +164,26 @@
               ctx->tx_to_send = len;
             }
           } else if (ctx->slot_enabled == 1) {
-            if ((slot < systick) && (systick < slot + SLOT_LEN - (ctx->tx_to_send << 1))) {
-              if (ctx->manual == 1) {
+            if ((slot <= systick) && (systick <= slot + SLOT_LEN - (ctx->tx_to_send << 1))) {
+              output_string("send at systick ");
+              output_uint32(systick);
+              output_newline();
+              if (ctx->manual == 1 && ctx->flow_value == 0) {
                 gpio_set(ctx->flow_port, ctx->flow_io);
+                ctx->flow_value = 1;
               }
               USART_CR1(UART[i]) |= USART_CR1_TXEIE;
             } else {
               USART_CR1(UART[i]) &= ~USART_CR1_TXEIE;
-              if (ctx->manual == 1) {
+              if (ctx->manual == 1 && ctx->flow_value == 1) {
                 gpio_clear(ctx->flow_port, ctx->flow_io);
+                ctx->flow_value = 0;
               }
             }
           } else {
-            if (ctx->manual == 1) {
+            if (ctx->manual == 1 && ctx->flow_value == 0) {
               gpio_set(ctx->flow_port, ctx->flow_io);
+              ctx->flow_value = 1;
             }
             USART_CR1(UART[i]) |= USART_CR1_TXEIE;
           }

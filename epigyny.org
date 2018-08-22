@@ -61,10 +61,11 @@
     ctx->baudrate = 9600;
     ctx->databits = 8;
     ctx->stopbits = 1;
-    ctx->tx_interval = 24; // 24 ms
-    ctx->loop_interval = 999; // 1 s
+    ctx->tx_interval = 9; // 10 ms
+    ctx->loop_interval = 9; // 10 ms
     ctx->slot_enabled = 1;
     ctx->manual = 1;
+    ctx->flow_value = 0;
     ctx->flow_rcc = RCC_GPIOF;
     ctx->flow_port = GPIOF;
     ctx->flow_io = GPIO4;
@@ -77,6 +78,7 @@
 中进行处理。当协议状态机发现接收的是完成数据包时，调用回调函数对上位机
 的命令进行处理。
 #+begin_src c :noweb-ref epigyny-eventloop
+  #include "repl.h"
   void epigyny_eventloop(struct uart_context_t * uartctx) {
     struct ring_t * rx = uartctx->rx;
     uint32_t rxlen = ring_length(rx);
@@ -169,7 +171,6 @@ egg-proto-fsm.xlsx 文件。
 slot 时，要避开同类下位机设备发送给上位机的数据包。
 
 #+begin_src c :noweb-ref proto-callback
-  #include "repl.h"
   static void epigyny_callback(uint8_t * buf, uint32_t size) {
 
     if (buf[6] == 0xFF) {
