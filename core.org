@@ -191,31 +191,36 @@ REPL通讯挂在串口1上。
     switch (action) {
     case EGG_PLAY_WELCOME_NEWLINE_LOCK_OFF_ACTION:
       lock_off(cabin);
-      speaker_play(1);
+      speaker_play(2);
       locking_timers[cabin] = systick;
       delaying_timers[cabin] = systick;
       break;
     case EGG_LOCK_ON_ACTION:
       lock_on(cabin);
       break;
+    case EGG_PLAY_FALLEN_NEWLINE_LOCK_ON_NEWLINE_FALLEN_ACTION:
+      lock_on(cabin);
+      epigyny_fallen(cabin);
+      speaker_play(4);
+      break;
     case EGG_PLAY_GOODBYE_NEWLINE_LOCK_ON_NEWLINE_FALLEN_ACTION:
       lock_on(cabin);
       epigyny_fallen(cabin);
-      speaker_play(2);
+      speaker_play(3);
       break;
     case EGG_PLAY_30S_ACTION:
-      speaker_play(3);
+      speaker_play(5);
       break;
     case EGG_PLAY_3M_NEWLINE_LOCK_ON_NEWLINE_TIMEOUT_ACTION:
       lock_on(cabin);
       epigyny_timeout(cabin);
-      speaker_play(6);
+      speaker_play(8);
       break;
     case EGG_PLAY_1M_ACTION:
-      speaker_play(4);
+      speaker_play(6);
       break;
     case EGG_PLAY_2M_ACTION:
-      speaker_play(5);
+      speaker_play(7);
       break;
     }
   }
