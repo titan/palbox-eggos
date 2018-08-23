@@ -164,9 +164,6 @@
             }
           } else if (ctx->slot_enabled == 1) {
             if ((slot <= systick) && (systick <= slot + SLOT_LEN - (ctx->tx_to_send << 1))) {
-              output_string("send at systick ");
-              output_uint32(systick);
-              output_newline();
               if (ctx->manual == 1 && ctx->flow_value == 0) {
                 gpio_set(ctx->flow_port, ctx->flow_io);
                 ctx->flow_value = 1;
