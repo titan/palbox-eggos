@@ -1,14 +1,16 @@
 NAME = eggos
 BUILDDIR=/dev/shm/$(NAME)
 TARGET = $(BUILDDIR)/eggos.elf
-BIN1 = /dev/shm/$(NAME)-1.bin
-BIN2 = /dev/shm/$(NAME)-2.bin
-BIN3 = /dev/shm/$(NAME)-3.bin
-BIN4 = /dev/shm/$(NAME)-4.bin
-BIN5 = /dev/shm/$(NAME)-5.bin
-BIN6 = /dev/shm/$(NAME)-6.bin
-BIN7 = /dev/shm/$(NAME)-7.bin
-BIN8 = /dev/shm/$(NAME)-8.bin
+DATE=$(shell git log -n 1 --date=short --pretty=format:%cd)
+COMMIT=$(shell git log -n 1 --pretty=format:%h)
+BIN1 = /dev/shm/$(NAME)-1-$(COMMIT)-$(DATE).bin
+BIN2 = /dev/shm/$(NAME)-2-$(COMMIT)-$(DATE).bin
+BIN3 = /dev/shm/$(NAME)-3-$(COMMIT)-$(DATE).bin
+BIN4 = /dev/shm/$(NAME)-4-$(COMMIT)-$(DATE).bin
+BIN5 = /dev/shm/$(NAME)-5-$(COMMIT)-$(DATE).bin
+BIN6 = /dev/shm/$(NAME)-6-$(COMMIT)-$(DATE).bin
+BIN7 = /dev/shm/$(NAME)-7-$(COMMIT)-$(DATE).bin
+BIN8 = /dev/shm/$(NAME)-8-$(COMMIT)-$(DATE).bin
 
 BUILDSRC:=$(BUILDDIR)/Makefile
 CORESRC:=$(BUILDDIR)/eggos.c
@@ -26,11 +28,13 @@ LIBRARY:=$(BUILDDIR)/libopencm3
 CONFIG:=$(BUILDDIR)/config
 CONFIGSRC:=config.orig
 
+DEPENDS = $(BUILDSRC) $(CORESRC) $(EPIGYNYSRC) $(DRIVERSRC) $(REPLSRC) $(UTILSRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+
 include .config
 
 all: $(TARGET)
 
-$(TARGET): $(BUILDSRC) $(CORESRC) $(EPIGYNYSRC) $(DRIVERSRC) $(REPLSRC) $(UTILSRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(TARGET): $(DEPENDS)
 	@sed '1s/\$$/1/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make; cd -
 
@@ -84,42 +88,42 @@ flash: $(TARGET)
 
 release: $(BIN1) $(BIN2) $(BIN3) $(BIN4) $(BIN5) $(BIN6) $(BIN7) $(BIN8)
 
-$(BIN1): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN1): $(DEPENDS)
 	@sed '1s/\$$/1/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN2): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN2): $(DEPENDS)
 	@sed '1s/\$$/2/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN3): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN3): $(DEPENDS)
 	@sed '1s/\$$/3/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN4): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN4): $(DEPENDS)
 	@sed '1s/\$$/4/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN5): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN5): $(DEPENDS)
 	@sed '1s/\$$/5/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN6): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN6): $(DEPENDS)
 	@sed '1s/\$$/6/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN7): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN7): $(DEPENDS)
 	@sed '1s/\$$/7/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
 
-$(BIN8): $(BUILDSRC) $(CORESRC) $(PROTOSRC) $(LIBRARY) $(COREFSMSRC) $(PROTOFSMSRC) $(CONFIGSRC) $(REPLFSMSRC) $(REPLLEXFSMSRC) $(INFRAREDFSMSRC)
+$(BIN8): $(DEPENDS)
 	@sed '1s/\$$/8/' $(CONFIGSRC) > $(CONFIG)
 	cd $(BUILDDIR); make clean; make bin; cd -
 	cp $(BUILDDIR)/$(NAME).bin $@
