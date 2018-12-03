@@ -92,16 +92,12 @@
         ring_read(rx, &byte);
         ctx->byte = byte;
 
-        if (byte < 0x5A) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X00_0X59_EVENT, ctx);
-        } else if (byte == 0x5A) {
+        if (byte == 0x5A) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X5A_EVENT, ctx);
-        } else if (0x5A < byte && byte < 0xA5) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0X5B_0XA4_EVENT, ctx);
         } else if (byte == 0xA5) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XA5_EVENT, ctx);
-        } else if (0xA5 < byte) {
-          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_0XA6_0XFF_EVENT, ctx);
+        } else {
+          egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_OTHERS_EVENT, ctx);
         }
         if (ctx->countdown == 0) {
           egg_proto_state = egg_proto_transform_state(egg_proto_state, EGG_PROTO_COUNTDOWN_EQUALS_0_EVENT, ctx);

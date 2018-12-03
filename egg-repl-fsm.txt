@@ -1,0 +1,66 @@
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+| state\event    | CR           | NUMBER         | HELP         | LOCK         | DEBUG        | ON           | OFF          | PLAY         | VOLUME       | GPIO         | OTHERS       |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                |              | help           | ----         | ----         | ----         | help         | help         | ----         | ----         | ----         | help         |
+| READY          |              | ----           | HELP         | LOCK         | DEBUG        | ----         | ----         | PLAY         | VOLUME       | GPIO         | ----         |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | help         | help           | help         | help         | help         | help         | help         | help         | help         | help         | help         |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| HELP           | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | lock usage   | lock usage     | lock usage   | lock usage   | lock usage   |              |              | lock usage   | lock usage   | lock usage   | lock usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| LOCK           | READY        | READY          | READY        | READY        | READY        | LOCK ON      | LOCK OFF     | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | lock usage   | number         | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| LOCK OFF       | READY        | LOCK OFF CABIN | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | lock off     | lock usage     | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| LOCK OFF CABIN | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | lock usage   | number         | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| LOCK ON        | READY        | LOCK ON CABIN  | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | lock on      | lock usage     | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   | lock usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| LOCK ON CABIN  | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | debug usage  | debug usage    | debug usage  | debug usage  | debug usage  |              |              | debug usage  | debug usage  | debug usage  | debug usage  |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| DEBUG          | READY        | READY          | READY        | READY        | READY        | DEBUG ON     | DEBUG OFF    | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | debug on     | debug usage    | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| DEBUG ON       | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | debug off    | debug usage    | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  | debug usage  |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| DEBUG OFF      | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | play usage   | number16       | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| PLAY           | READY        | PLAY AUDIO     | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | play         | play usage     | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   | play usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| PLAY AUDIO     | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | volume usage | number         | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| VOLUME         | READY        | VOLUME VOL     | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | volume       | volume usage   | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage | volume usage |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| VOLUME VOL     | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | gpio usage   | number         | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| GPIO           | READY        | GPIO VALUE     | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+
+|                | gpio         | gpio usage     | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   | gpio usage   |
+|                | ----         | ----           | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         | ----         |
+| GPIO VALUE     | READY        | READY          | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        | READY        |
++----------------+--------------+----------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+--------------+

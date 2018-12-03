@@ -18,7 +18,7 @@ COREFSMSRC:=$(BUILDDIR)/egg-fsm.c
 EPIGYNYSRC:=$(BUILDDIR)/epigyny.c
 DRIVERSRC:=$(BUILDDIR)/lock.c
 REPLSRC:=$(BUILDDIR)/repl.c
-UTILSRC:=$(BUILDDIR)/hash.c
+UTILSRC:=$(BUILDDIR)/base64.c $(BUILDDIR)/hash.c $(BUILDDIR)/ring.c $(BUILDDIR)/utility.c
 PROTOFSMSRC:=$(BUILDDIR)/egg-proto-fsm.c
 PROTOSRC:=$(BUILDDIR)/tightrope.h
 REPLFSMSRC:=$(BUILDDIR)/egg-repl-fsm.c
@@ -53,19 +53,19 @@ $(REPLSRC): repl.org | prebuild
 $(UTILSRC): utility.org | prebuild
 	org-tangle $<
 
-$(COREFSMSRC): egg-fsm.xlsx | prebuild
+$(COREFSMSRC): egg-fsm.txt | prebuild
 	fsm-generator.py $< -d $(BUILDDIR) --prefix egg --style table
 
-$(PROTOFSMSRC): egg-proto-fsm.xlsx | prebuild
+$(PROTOFSMSRC): egg-proto-fsm.txt | prebuild
 	fsm-generator.py $< -d $(BUILDDIR) --prefix egg_proto --style table
 
-$(REPLFSMSRC): egg-repl-fsm.xlsx | prebuild
+$(REPLFSMSRC): egg-repl-fsm.txt | prebuild
 	fsm-generator.py $< -d $(BUILDDIR) --prefix egg_repl --style table
 
-$(REPLLEXFSMSRC): egg-repl-lex-fsm.xlsx | prebuild
+$(REPLLEXFSMSRC): egg-repl-lex-fsm.txt | prebuild
 	fsm-generator.py $< -d $(BUILDDIR) --prefix egg_repl_lex --style table
 
-$(INFRAREDFSMSRC): egg-infrared-fsm.xlsx | prebuild
+$(INFRAREDFSMSRC): egg-infrared-fsm.txt | prebuild
 	fsm-generator.py $< -d $(BUILDDIR) --prefix egg_infrared --style code
 
 $(BUILDSRC): build.org | prebuild
